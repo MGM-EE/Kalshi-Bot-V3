@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from statistics import pstdev
 
@@ -63,6 +63,11 @@ def taker_fee(quantity, price):
 
 @dataclass(frozen=True)
 class PaperConfig:
+    """Paper rules in dollars per share; sale floors apply to profit exits only.
+
+    Stops, reversals, holding-time limits, expiry risk, and verified settlement
+    can realize prices below the configured minimum profit sale price.
+    """
     initial_cash: float = 1000.0
     contracts: int = 5
     series: str = "KXBTC15M"
@@ -71,26 +76,60 @@ class PaperConfig:
     cooldown_seconds: float = 20.0
     max_hold_seconds: float = 180.0
     stop_loss: float = 0.12
+    min_entry_price: float = 0.10
+    max_entry_price: float = 0.75
+    min_exit_price: float = 0.80
+    dynamic_exit_min: float = 0.80
+    dynamic_exit_max: float = 0.95
+    dynamic_exit_enabled: bool = True
+    require_toward_strike: bool = True
+    entries_enabled: bool = True
+    max_spread: float = 0.04
+    min_momentum_bps: float = 0.75
+    flow_imbalance: float = 0.12
 
     def __post_init__(self):
         numeric = (self.initial_cash, self.warmup_seconds, self.cooldown_seconds,
-                   self.max_hold_seconds, self.stop_loss)
-        if any(not isinstance(v, (int, float)) or _num(v) is None for v in numeric):
+                   self.max_hold_seconds, self.stop_loss, self.min_entry_price,
+                   self.max_entry_price, self.min_exit_price, self.dynamic_exit_min,
+                   self.dynamic_exit_max, self.max_spread, self.min_momentum_bps,
+                   self.flow_imbalance)
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or _num(v) is None
+               for v in numeric):
             raise ValueError("paper configuration must be finite")
+        if any(not isinstance(v, bool) for v in
+               (self.dynamic_exit_enabled, self.require_toward_strike, self.entries_enabled)):
+            raise ValueError("paper configuration toggles must be booleans")
         if (isinstance(self.contracts, bool) or not isinstance(self.contracts, int)
                 or not 1 <= self.contracts <= 100 or self.initial_cash <= 0
-                or self.warmup_seconds < 20 or self.cooldown_seconds < 0
-                or self.max_hold_seconds <= 0 or not 0 < self.stop_loss < 1):
+                or self.warmup_seconds < 20 or not 0 <= self.cooldown_seconds <= 3600
+                or not 1 <= self.max_hold_seconds <= 3600 or not .001 <= self.stop_loss <= .95
+                or not .01 <= self.min_entry_price <= self.max_entry_price < self.min_exit_price <= .95
+                or not .01 <= self.dynamic_exit_min <= self.dynamic_exit_max <= .95
+                or (self.dynamic_exit_enabled and self.min_exit_price > self.dynamic_exit_min)
+                or not 0 <= self.max_spread <= .20
+                or not .01 <= self.min_momentum_bps <= 100
+                or not 0 <= self.flow_imbalance <= 1):
             raise ValueError("invalid paper configuration")
         if self.series != "KXBTC15M" or self.symbol != "BTC/USD":
             raise ValueError("paper signals currently support KXBTC15M and BTC/USD only")
+
+
+def _saved_config(value):
+    """Saved settings must be complete; missing settings in an old journal are optional."""
+    if not isinstance(value, dict) or value.keys() != {field.name for field in fields(PaperConfig)}:
+        raise ValueError("invalid saved paper configuration")
+    return PaperConfig(**value)
 
 
 class PaperEngine:
     """One small simulated position, bounded state, and no external side effects."""
 
     def __init__(self, config=None, state=None):
-        self.config = config or PaperConfig()
+        self.config = config if config is not None else PaperConfig()
+        if not isinstance(self.config, PaperConfig):
+            raise ValueError("paper configuration must be a PaperConfig")
+        self.config_revision = 0
         self.cash = self.config.initial_cash
         self.realized_pnl = 0.0
         self.trade_count = self.wins = self.event_seq = 0
@@ -111,6 +150,13 @@ class PaperEngine:
         try:
             if not isinstance(state, dict) or state.get("schema") != 1:
                 raise ValueError("unsupported state schema")
+            if "config" in state:
+                self.config = _saved_config(state["config"])
+            config_revision = state.get("config_revision", 0)
+            if (isinstance(config_revision, bool) or not isinstance(config_revision, int)
+                    or config_revision < 0):
+                raise ValueError("invalid configuration revision")
+            self.config_revision = config_revision
             for key in ("cash", "realized_pnl", "cooldown_until"):
                 value = _num(state[key])
                 if value is None or (key != "realized_pnl" and value < 0):
@@ -145,9 +191,15 @@ class PaperEngine:
                 for key in ("entry_price", "exit_target", "entry_fee_remaining", "opened_at", "realized_pnl"):
                     if _num(position.get(key)) is None:
                         raise ValueError("invalid position amounts")
-                if (not 0 < position["entry_price"] < 1 or not .80 <= position["exit_target"] <= .95
+                if (not 0 < position["entry_price"] < 1 or not .01 <= position["exit_target"] <= .95
                         or position["entry_fee_remaining"] < 0 or position["opened_at"] < 0):
                     raise ValueError("invalid position amounts")
+                if "rules" in position:
+                    _saved_config(position["rules"])
+                if "config_revision" in position:
+                    revision = position["config_revision"]
+                    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                        raise ValueError("invalid position configuration revision")
             events = state["events"]
             if not isinstance(events, list) or len(events) > 20:
                 raise ValueError("invalid event list")
@@ -166,17 +218,44 @@ class PaperEngine:
                         or (event.get("pnl") is not None and _num(event["pnl"]) is None)):
                     raise ValueError("invalid trade event")
                 last_id = event["id"]
+                if "rules" in event:
+                    _saved_config(event["rules"])
+                if "config_revision" in event:
+                    revision = event["config_revision"]
+                    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                        raise ValueError("invalid event configuration revision")
             self.position = position
             self.events = deque(copy.deepcopy(events), maxlen=20)
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ValueError("invalid saved paper state") from exc
 
     def dump_state(self):
-        return copy.deepcopy({"schema": 1, "cash": self.cash, "realized_pnl": self.realized_pnl,
+        return copy.deepcopy({"schema": 1, "config": asdict(self.config),
+                              "config_revision": self.config_revision,
+                              "cash": self.cash, "realized_pnl": self.realized_pnl,
                               "trade_count": self.trade_count, "wins": self.wins,
                               "event_seq": self.event_seq, "position": self.position,
                               "events": list(self.events), "cooldown_until": self.cooldown_until,
                               "last_book_versions": self.last_book_versions})
+
+    def set_config(self, config):
+        """Apply settings to future entries without resetting market history or the account.
+
+        Every open position retains its entry-time rules. Pausing entries never
+        prevents profit, risk, or official-settlement exits.
+        """
+        if not isinstance(config, PaperConfig):
+            raise ValueError("paper configuration must be a PaperConfig")
+        if config != self.config:
+            self.config = config
+            self.config_revision += 1
+
+    def _position_config(self):
+        if self.position is not None and "rules" in self.position:
+            return _saved_config(self.position["rules"])
+        # Schema-1 positions created before settings existed retain the original
+        # exit rules, even if new account settings differ after an upgrade.
+        return PaperConfig(require_toward_strike=False)
 
     def snapshot(self):
         position = copy.deepcopy(self.position)
@@ -190,6 +269,7 @@ class PaperEngine:
                 unrealized = value - fee - position["contracts"] * position["entry_price"] - position["entry_fee_remaining"]
                 equity = self.cash + value - fee
         return {"enabled": True, "mode": "paper", "status": self._status,
+                "config": asdict(self.config), "config_revision": self.config_revision,
                 "message": self._message, "cash": round(self.cash, 4),
                 "realized_pnl": round(self.realized_pnl, 4),
                 "unrealized_pnl": round(unrealized, 4) if unrealized is not None else None,
@@ -204,6 +284,9 @@ class PaperEngine:
                  "ticker": position["ticker"], "price": round(price, 6), "contracts": quantity,
                  "pnl": round(pnl, 6) if pnl is not None else None,
                  "reason": reason, "at": _iso(wall_time)}
+        if kind == "entry":
+            event["rules"] = copy.deepcopy(position["rules"])
+            event["config_revision"] = position["config_revision"]
         self.events.append(event)
         return copy.deepcopy(event)
 
@@ -217,10 +300,11 @@ class PaperEngine:
         return (isinstance(version, int) and not isinstance(version, bool) and version >= 0
                 and version > self.last_book_versions.get(book.get("ticker"), -1))
 
-    def _observe(self, kraken, now):
+    def _observe(self, kraken, now, config=None):
+        config = config or self.config
         data = kraken.get("data", {})
         valid = (_fresh(kraken) and kraken.get("transport") == "websocket"
-                 and data.get("symbol") == self.config.symbol)
+                 and data.get("symbol") == config.symbol)
         bid, ask = _num(data.get("bid")), _num(data.get("ask"))
         valid = valid and bid is not None and ask is not None and 0 < bid <= ask
         if not valid:
@@ -236,9 +320,9 @@ class PaperEngine:
             self.samples.append((now, (bid + ask) / 2))
             self._last_update = update
             self._last_observation = now
-        while self.samples and self.samples[0][0] < now - max(25, self.config.warmup_seconds + 5):
+        while self.samples and self.samples[0][0] < now - max(25, config.warmup_seconds + 5):
             self.samples.popleft()
-        if len(self.samples) < 5 or now - self.samples[0][0] < self.config.warmup_seconds:
+        if len(self.samples) < 5 or now - self.samples[0][0] < config.warmup_seconds:
             return None
         current = self.samples[-1][1]
         old5 = next((p for t, p in reversed(self.samples) if t <= now - 5), None)
@@ -247,9 +331,10 @@ class PaperEngine:
             return None
         increments = [(b[1] / a[1] - 1) * 10000 for a, b in zip(self.samples, list(self.samples)[1:])]
         volatility = pstdev(increments) if len(increments) > 1 else 0
-        return {"five": (current / old5 - 1) * 10000,
+        return {"midpoint": current, "five": (current / old5 - 1) * 10000,
                 "twenty": (current / old20 - 1) * 10000,
-                "floor5": max(.75, volatility * .6), "floor20": max(1., volatility * 1.5)}
+                "floor5": max(config.min_momentum_bps, volatility * .6),
+                "floor20": max(config.min_momentum_bps * 4 / 3, volatility * 1.5)}
 
     def _flow(self, kraken):
         flow = kraken.get("data", {}).get("flow")
@@ -269,7 +354,10 @@ class PaperEngine:
         return {"signed": (buy - sell) / (buy + sell),
                 "large": (large_buy - large_sell) / large if large else 0.0}
 
-    def _target(self, side, signal, flow, bids, asks):
+    def _target(self, side, signal, flow, bids, asks, config=None):
+        config = config or self.config
+        if not config.dynamic_exit_enabled:
+            return config.min_exit_price
         direction = 1 if side == "up" else -1
         momentum = max(0., min(1., min(direction * signal["five"] / signal["floor5"],
                                        direction * signal["twenty"] / signal["floor20"]) / 3))
@@ -279,7 +367,8 @@ class PaperEngine:
         ask_depth = sum(q for _, q in asks[:3])
         liquidity = bid_depth / (bid_depth + ask_depth) if bid_depth + ask_depth else 0
         score = .4 * momentum + .35 * aggressive + .15 * large + .1 * liquidity
-        return min(.95, max(.80, round(.80 + .15 * score, 2)))
+        low, high = config.dynamic_exit_min, config.dynamic_exit_max
+        return min(.95, high, max(config.min_exit_price, low, round(low + (high - low) * score, 2)))
 
     @staticmethod
     def _sweep(levels, quantity, floor=None, ceiling=None):
@@ -299,11 +388,12 @@ class PaperEngine:
         return fills
 
     def _finish(self, wall_time):
+        cooldown = self._position_config().cooldown_seconds
         self.trade_count += 1
         self.wins += int(self.position["realized_pnl"] > 0)
         self.position = None
         self._mark = None
-        self.cooldown_until = wall_time + self.config.cooldown_seconds
+        self.cooldown_until = wall_time + cooldown
 
     def _exit(self, book, levels, reason, wall_time, settlement=None):
         position = self.position
@@ -314,7 +404,8 @@ class PaperEngine:
             return []
         else:
             # Risk exits sweep available depth. Profit exits never fill below the trigger.
-            floor = .95 if reason == "hard_95c" else position["exit_target"] if reason == "dynamic_target" else None
+            floor = (.95 if reason == "hard_95c" else position["exit_target"]
+                     if reason in ("dynamic_target", "fixed_target") else None)
             fills = self._sweep(levels, quantity, floor=floor)
         filled = sum(q for _, q in fills)
         if not filled:
@@ -344,7 +435,8 @@ class PaperEngine:
         if _num(now) is None or _num(wall_time) is None:
             raise ValueError("step clocks must be finite")
         kraken, kalshi = feeds.get("kraken", {}), feeds.get("kalshi", {})
-        signal = self._observe(kraken, now)
+        rules = self._position_config() if self.position else self.config
+        signal = self._observe(kraken, now, rules)
         flow = self._flow(kraken)
         yes, no = _levels(book.get("yes")), _levels(book.get("no"))
         same_book = self.position is None or book.get("ticker") == self.position["ticker"]
@@ -368,7 +460,7 @@ class PaperEngine:
                 self._message = "Market closed; waiting for an official settlement result."
                 return []
             if signal and flow and book_fresh and book_tradable and bids and asks:
-                self.position["exit_target"] = self._target(side, signal, flow, bids, asks)
+                self.position["exit_target"] = self._target(side, signal, flow, bids, asks, rules)
             if not book_fresh or not book_tradable or not bids:
                 self._message = "Holding; waiting for fresh executable Kalshi depth."
                 return []
@@ -378,17 +470,20 @@ class PaperEngine:
             if bid >= .95:
                 reason = "hard_95c"
             elif bid >= self.position["exit_target"]:
-                reason = "dynamic_target"
-            elif bid <= self.position["entry_price"] - self.config.stop_loss:
+                reason = "dynamic_target" if rules.dynamic_exit_enabled else "fixed_target"
+            elif bid <= self.position["entry_price"] - rules.stop_loss:
                 reason = "stop_loss"
             elif remaining_time <= 30:
                 reason = "expiry_risk"
-            elif wall_time - self.position["opened_at"] >= self.config.max_hold_seconds:
+            elif wall_time - self.position["opened_at"] >= rules.max_hold_seconds:
                 reason = "max_hold"
             elif (signal and flow and direction * signal["five"] <= -signal["floor5"]
-                  and direction * flow["signed"] <= -.12):
+                  and direction * flow["signed"] <= -rules.flow_imbalance):
                 reason = "momentum_reversal"
             return self._exit(book, bids, reason, wall_time) if reason else []
+        if not self.config.entries_enabled:
+            self._status, self._message = "paused", "Paper entries paused; exits remain active."
+            return []
         if not (_fresh(kalshi) and _fresh(kraken) and book_fresh):
             self._status, self._message = "paused", "Waiting for fresh market data."
             return []
@@ -407,13 +502,21 @@ class PaperEngine:
         if signal is None:
             self._status, self._message = "warming_up", "Warming up BTC momentum (20 seconds)."
             return []
+        strike = _num(book.get("strike_price"))
+        if self.config.require_toward_strike and (strike is None or strike <= 0
+                or book.get("strike_source") != "kalshi.floor_strike"):
+            self._status, self._message = "watching", "Waiting for verified Kalshi strike price."
+            return []
         self._status, self._message = "watching", "Watching momentum, trade flow, and visible liquidity."
         if flow is None or wall_time < self.cooldown_until or not self._available_revision(book):
             return []
         for candidate, direction in (("up", 1), ("down", -1)):
+            if self.config.require_toward_strike and direction * (strike - signal["midpoint"]) <= 0:
+                continue
             if (direction * signal["five"] < signal["floor5"]
                     or direction * signal["twenty"] < signal["floor20"]
-                    or direction * flow["signed"] < .12 or direction * flow["large"] < -.35):
+                    or direction * flow["signed"] < self.config.flow_imbalance
+                    or direction * flow["large"] < -.35):
                 continue
             bids = yes if candidate == "up" else no
             asks = sorted([(round(1 - p, 6), q) for p, q in (no if candidate == "up" else yes)])
@@ -421,9 +524,11 @@ class PaperEngine:
                 continue
             ask, bid = asks[0][0], bids[0][0]
             spread = ask - bid
-            if not .10 <= ask <= .75 or not -1e-9 <= spread <= .04 + 1e-9:
+            if (not self.config.min_entry_price <= ask <= self.config.max_entry_price
+                    or not -1e-9 <= spread <= self.config.max_spread + 1e-9):
                 continue
-            fills = self._sweep(asks, self.config.contracts, ceiling=ask + .01)
+            fills = self._sweep(asks, self.config.contracts,
+                                ceiling=min(ask + .01, self.config.max_entry_price))
             quantity = sum(q for _, q in fills)
             if quantity != self.config.contracts:
                 continue
@@ -435,7 +540,8 @@ class PaperEngine:
                              "initial_contracts": quantity, "entry_price": notional / quantity,
                              "entry_fee_remaining": fee, "opened_at": wall_time,
                              "close_time": book["close_time"], "realized_pnl": 0.,
-                             "exit_target": self._target(candidate, signal, flow, bids, asks)}
+                             "exit_target": self._target(candidate, signal, flow, bids, asks),
+                             "rules": asdict(self.config), "config_revision": self.config_revision}
             self.cash -= notional + fee
             self._consume(book)
             self._mark = bid

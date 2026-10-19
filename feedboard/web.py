@@ -4,17 +4,55 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
 from .core import Settings, Store, start_feeds, stop_feeds
 from .paper import PaperConfig
-from .paper_runtime import PaperJournal, run_paper
+from .paper_runtime import PaperControl, PaperJournal, SettingsConflict, SettingsUnavailable, run_paper
 
 STORE = web.AppKey("store", Store)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 MAX_CLIENTS = 8
 JOURNAL = web.AppKey("paper_journal", PaperJournal)
+
+
+async def paper_settings(request: web.Request):
+    control = request.app[STORE].paper_control
+    if request.method == "GET":
+        document = control.document() if control else PaperControl(PaperConfig()).document()
+        return web.json_response(document, headers={"Cache-Control": "no-store"})
+    if control is None:
+        return web.json_response({"error": "Paper trading is disabled"}, status=503)
+    origin = request.headers.get("Origin")
+    if origin:
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            return web.json_response({"error": "Invalid settings request origin"}, status=403)
+        forwarded_secure_browser = (parsed.scheme == "https" and request.scheme == "http"
+                                    and request.headers.get("Sec-Fetch-Site") == "same-origin"
+                                    and request.headers.get("X-Forwarded-Proto") == "https")
+        if (parsed.scheme not in ("http", "https") or parsed.netloc.lower() != request.host.lower()
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path or parsed.query or parsed.fragment
+                or (parsed.scheme != request.scheme and not forwarded_secure_browser)):
+            return web.json_response({"error": "Settings must be saved from this app's origin"}, status=403)
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Settings must be sent as application/json"}, status=415)
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict) or set(payload) != {"settings", "revision"}:
+            raise ValueError("Send settings and revision; reload settings to get the current revision")
+        document = await control.change(payload["settings"], payload["revision"])
+        return web.json_response(document, headers={"Cache-Control": "no-store"})
+    except SettingsConflict as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except SettingsUnavailable as error:
+        return web.json_response({"error": str(error)}, status=503)
+    except (ValueError, TypeError) as error:
+        return web.json_response({"error": str(error)}, status=400)
 
 
 async def paper_events(request: web.Request):
@@ -84,10 +122,11 @@ async def events(request: web.Request):
 
 def create_app(settings: Settings | None = None, *, run_feeds: bool = True,
                paper_path: Path | None = None, paper_config: PaperConfig | None = None) -> web.Application:
-    app = web.Application(client_max_size=1024)
+    app = web.Application(client_max_size=4096)
     app[STORE] = Store(settings or Settings())
     if paper_path is not None:
         app[JOURNAL] = PaperJournal(paper_path)
+        app[STORE].paper_control = PaperControl(paper_config or PaperConfig())
 
         async def paper_lifecycle(application):
             task = asyncio.create_task(run_paper(application[STORE], application[JOURNAL],
@@ -103,6 +142,8 @@ def create_app(settings: Settings | None = None, *, run_feeds: bool = True,
     app.router.add_get("/api/snapshot", snapshot)
     app.router.add_get("/api/events", events)
     app.router.add_get("/api/paper/trades", paper_events)
+    app.router.add_get("/api/paper/settings", paper_settings)
+    app.router.add_put("/api/paper/settings", paper_settings)
     app.router.add_get("/healthz", health)
     app.router.add_get("/readyz", health)
     app.router.add_static("/static", STATIC, show_index=False)

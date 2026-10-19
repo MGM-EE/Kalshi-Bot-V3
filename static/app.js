@@ -23,6 +23,9 @@
   let lastPaperEvent = null;
   let activePaperEvent = null;
   let paperEventTimer = null;
+  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent"];
+  const settingInputs = Object.fromEntries(settingNames.map(name => [name, el["settings-form"].elements.namedItem(name)]));
+  const settingsState = { loaded: false, attempted: false, available: false, busy: false, saving: false, revision: null, saved: null, conflict: false };
 
   function setText(node, value) {
     if (node.textContent !== value) node.textContent = value;
@@ -30,6 +33,155 @@
 
   function numeric(value) {
     return typeof value === "number" && Number.isFinite(value);
+  }
+
+  function formSettings() {
+    return Object.fromEntries(settingNames.map(name => {
+      const input = settingInputs[name];
+      return [name, input.type === "checkbox" ? input.checked : input.value.trim() === "" ? null : Number(input.value)];
+    }));
+  }
+
+  function settingsDirty() {
+    const current = formSettings();
+    return settingsState.saved !== null && settingNames.some(name => current[name] !== settingsState.saved[name]);
+  }
+
+  function settingsMessage(message, state = "") {
+    setText(el["settings-status"], message);
+    el["settings-status"].dataset.state = state;
+  }
+
+  function updateSettingsControls() {
+    el["settings-fields"].disabled = settingsState.busy || !settingsState.loaded || !settingsState.available;
+    const dynamic = settingInputs.dynamic_enabled.checked;
+    el["dynamic-range"].setAttribute("aria-disabled", String(!dynamic));
+    settingInputs.dynamic_min_cents.disabled = !dynamic;
+    settingInputs.dynamic_max_cents.disabled = !dynamic;
+    el["settings-save"].disabled = settingsState.busy || !settingsState.loaded || !settingsState.available || settingsState.conflict || !settingsDirty();
+    setText(el["settings-save"], settingsState.saving ? "Saving…" : "Save settings");
+    el["settings-reload"].disabled = settingsState.busy;
+  }
+
+  function clearSettingsErrors() {
+    for (const input of Object.values(settingInputs)) input.removeAttribute("aria-invalid");
+  }
+
+  function settingsError(message, fields = {}) {
+    for (const name of Object.keys(fields)) settingInputs[name]?.setAttribute("aria-invalid", "true");
+    settingsMessage(message, "error");
+  }
+
+  function validateSettings(settings) {
+    for (const name of settingNames) {
+      const input = settingInputs[name];
+      if (input.type === "checkbox") continue;
+      const value = settings[name];
+      if (!numeric(value) || value < Number(input.min) || value > Number(input.max) || !input.disabled && !input.checkValidity()) {
+        const label = input.closest("label").querySelector("span").textContent.trim();
+        return { message: `Check ${label}: enter a value from ${input.min} to ${input.max}.`, fields: { [name]: true } };
+      }
+    }
+    if (settings.min_buy_cents > settings.max_buy_cents) return { message: "Minimum buy must be at or below maximum buy.", fields: { min_buy_cents: true, max_buy_cents: true } };
+    if (settings.max_buy_cents >= settings.min_sell_cents) return { message: "Maximum buy must be below the minimum profit-sale price.", fields: { max_buy_cents: true, min_sell_cents: true } };
+    if (settings.dynamic_enabled && settings.min_sell_cents > settings.dynamic_min_cents) return { message: "The dynamic range must start at or above the minimum profit-sale price.", fields: { min_sell_cents: true, dynamic_min_cents: true } };
+    if (settings.dynamic_enabled && settings.dynamic_min_cents > settings.dynamic_max_cents) return { message: "The dynamic range must run from a lower price to a higher price, up to 95¢.", fields: { dynamic_min_cents: true, dynamic_max_cents: true } };
+    return null;
+  }
+
+  async function settingsRequest(options = {}) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch("/api/paper/settings", { cache: "no-store", ...options, signal: controller.signal });
+      let body;
+      try { body = await response.json(); } catch { throw new Error("Settings service returned an unreadable response. Try reloading."); }
+      if (!response.ok) {
+        const error = new Error(typeof body.error === "string" ? body.error : "Settings could not be saved. Try again.");
+        error.status = response.status;
+        error.fields = body.fields && typeof body.fields === "object" ? body.fields : {};
+        throw error;
+      }
+      if (!body.settings || !Number.isSafeInteger(body.revision) || typeof body.available !== "boolean" || settingNames.some(name => typeof body.settings[name] !== (settingInputs[name].type === "checkbox" ? "boolean" : "number") || typeof body.settings[name] === "number" && !Number.isFinite(body.settings[name]))) {
+        throw new Error("Settings service returned an incomplete response. Try reloading.");
+      }
+      return body;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  function acceptSettings(body) {
+    settingsState.loaded = true;
+    settingsState.available = body.available;
+    settingsState.revision = body.revision;
+    settingsState.saved = Object.fromEntries(settingNames.map(name => [name, body.settings[name]]));
+    settingsState.conflict = false;
+    for (const name of settingNames) {
+      const input = settingInputs[name];
+      if (input.type === "checkbox") input.checked = body.settings[name];
+      else input.value = String(body.settings[name]);
+    }
+    clearSettingsErrors();
+    el["settings-reload"].hidden = false;
+    setText(el["settings-reload"], "Reload saved settings");
+  }
+
+  async function loadSettings() {
+    if (settingsState.busy) return;
+    settingsState.attempted = true;
+    settingsState.busy = true;
+    settingsMessage("Loading saved settings…");
+    updateSettingsControls();
+    try {
+      const body = await settingsRequest();
+      acceptSettings(body);
+      settingsMessage(body.available ? "Saved settings loaded." : "Settings are unavailable. Reload after paper trading is available.", body.available ? "saved" : "error");
+    } catch (error) {
+      settingsError(error.name === "AbortError" ? "Loading timed out. Retry when the app is connected." : error.message);
+      el["settings-reload"].hidden = false;
+      setText(el["settings-reload"], settingsState.loaded ? "Reload saved settings" : "Retry loading settings");
+    } finally {
+      settingsState.busy = false;
+      updateSettingsControls();
+    }
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault();
+    if (settingsState.busy || !settingsState.loaded || !settingsState.available || settingsState.conflict || !settingsDirty()) return;
+    clearSettingsErrors();
+    const settings = formSettings();
+    const invalid = validateSettings(settings);
+    if (invalid) {
+      settingsError(invalid.message, invalid.fields);
+      const input = settingInputs[Object.keys(invalid.fields)[0]];
+      const advanced = input?.closest(".advanced-settings");
+      if (advanced) advanced.open = true;
+      input?.focus();
+      return;
+    }
+    settingsState.busy = true;
+    settingsState.saving = true;
+    settingsMessage("Saving settings…");
+    updateSettingsControls();
+    try {
+      const body = await settingsRequest({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings, revision: settingsState.revision }) });
+      acceptSettings(body);
+      settingsMessage("Saved. The next entry will use these settings.", "saved");
+    } catch (error) {
+      if (error.status === 409) {
+        settingsState.conflict = true;
+        settingsError("Settings changed in another window. Your edits are still here. Reload saved settings before trying again.");
+        el["settings-reload"].hidden = false;
+      } else {
+        settingsError(error.name === "AbortError" ? "Saving timed out. Your edits are still here. Reload saved settings to check whether they were saved." : error.message, error.fields);
+      }
+    } finally {
+      settingsState.busy = false;
+      settingsState.saving = false;
+      updateSettingsControls();
+    }
   }
 
   function money(value) {
@@ -130,7 +282,8 @@
     el["paper-panel"].dataset.status = state;
     setText(el["paper-status"], !connected ? connectionState === "retrying" ? "Reconnecting" : "Connecting" : paperStatusLabels[state] || "Watching");
     const position = paper.position;
-    let positionText = state === "warming_up" ? "Collecting a little history" : state === "paused" ? "Waiting for fresh data" : "Waiting for a setup";
+    const entriesPaused = connected && feedsLive && paper.config?.entries_enabled === false;
+    let positionText = entriesPaused ? "New paper buys paused" : state === "warming_up" ? "Collecting a little history" : state === "paused" ? "Waiting for fresh data" : "Waiting for a setup";
     if (position) positionText = `Holding ${paperSide(position.side)} ×${integer.format(position.contracts)}`;
     else if (lastPaperEvent && lastPaperEvent.type !== "entry") positionText = `Last exit · ${paperSide(lastPaperEvent.side)}`;
     setText(el["paper-position"], positionText);
@@ -301,12 +454,26 @@
     setText(el["kraken-spread"], numeric(quote.bid) && numeric(quote.ask) ? money(quote.ask - quote.bid) : "—");
     renderChart();
     const data = feeds.kalshi?.data || {};
+    const reference = snapshot.reference || {};
+    setText(el["settings-strike"], numeric(reference.strike_price) && reference.strike_source === "kalshi.floor_strike" ? `Strike ${money(reference.strike_price)} · trend uses Kraken spot; settlement uses Kalshi’s BRTI reference.` : "Strike unavailable · buys toward the strike wait for a reference.");
     const series = typeof data.series === "string" ? data.series : "KXBTC15M";
     setText(el["kalshi-series"], series === "KXBTC15M" ? `${series} · 15-minute markets` : series);
     renderMarkets(Array.isArray(data.markets) ? data.markets : []);
     setText(el["loop-lag"], numeric(snapshot.metrics.loop_lag_ms) ? `${snapshot.metrics.loop_lag_ms.toFixed(1)} ms` : "—");
     setText(el["update-count"], integer.format((feeds.kraken?.updates || 0) + (feeds.kalshi?.updates || 0)));
   }
+
+  el["trade-settings"].addEventListener("toggle", () => {
+    if (el["trade-settings"].open && !settingsState.attempted) loadSettings();
+  });
+  el["settings-form"].addEventListener("submit", saveSettings);
+  el["settings-reload"].addEventListener("click", loadSettings);
+  el["settings-form"].addEventListener("input", event => {
+    if (!Object.values(settingInputs).includes(event.target)) return;
+    clearSettingsErrors();
+    if (!settingsState.conflict) settingsMessage(settingsDirty() ? "Unsaved changes." : "Saved settings loaded.", settingsDirty() ? "" : "saved");
+    updateSettingsControls();
+  });
 
   fetch("/api/snapshot", { cache: "no-store" })
     .then(response => { if (!response.ok) throw new Error("Snapshot unavailable"); return response.json(); })

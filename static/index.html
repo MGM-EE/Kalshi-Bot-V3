@@ -27,6 +27,41 @@
           <div class="paper-result"><div class="paper-target" id="paper-target" hidden></div><div class="paper-pnl"><span>Net P&amp;L</span><strong id="paper-pnl">—</strong></div></div>
         </section>
 
+        <details class="trade-settings" id="trade-settings">
+          <summary><span>Trade settings</span><span class="settings-summary">Paper trading only</span></summary>
+          <form id="settings-form" novalidate>
+            <p class="settings-intro">Changes apply to the next entry; open trades keep their saved exit rules.</p>
+            <fieldset id="settings-fields" disabled>
+              <legend class="visually-hidden">Paper trade conditions</legend>
+              <div class="settings-grid">
+                <label class="setting-field" for="setting-min-buy"><span>Minimum buy <small>¢ / share</small></span><input id="setting-min-buy" name="min_buy_cents" type="number" min="1" max="95" step="0.1" inputmode="decimal" required value="10"></label>
+                <label class="setting-field" for="setting-max-buy"><span>Maximum buy <small>¢ / share</small></span><input id="setting-max-buy" name="max_buy_cents" type="number" min="1" max="95" step="0.1" inputmode="decimal" required value="75"></label>
+                <label class="setting-field" for="setting-min-sell"><span>Minimum profit-sale <small>¢ / share</small></span><input id="setting-min-sell" name="min_sell_cents" type="number" min="1" max="95" step="0.1" inputmode="decimal" required value="80" aria-describedby="settings-exit-note"></label>
+                <label class="setting-field" for="setting-contracts"><span>Contracts <small>per entry</small></span><input id="setting-contracts" name="contracts" type="number" min="1" max="100" step="1" inputmode="numeric" required value="5"></label>
+              </div>
+              <div class="dynamic-settings">
+                <label class="setting-check" for="setting-dynamic"><input id="setting-dynamic" name="dynamic_enabled" type="checkbox" checked><span>Dynamic profit target</span></label>
+                <div class="dynamic-range" id="dynamic-range"><label class="setting-field" for="setting-dynamic-min"><span>From <small>¢ / share</small></span><input id="setting-dynamic-min" name="dynamic_min_cents" type="number" min="1" max="95" step="0.1" inputmode="decimal" required value="80"></label><span class="range-divider" aria-hidden="true">–</span><label class="setting-field" for="setting-dynamic-max"><span>To <small>¢ / share</small></span><input id="setting-dynamic-max" name="dynamic_max_cents" type="number" min="1" max="95" step="0.1" inputmode="decimal" required value="95"></label></div>
+                <span class="settings-help">Fixed profit-exit cap: 95¢</span>
+              </div>
+              <div class="settings-toggles">
+                <label class="setting-check" for="setting-toward-strike"><input id="setting-toward-strike" name="toward_strike_only" type="checkbox" checked><span>Only buy toward the strike <small>Up: below and rising. Down: above and falling.</small><small id="settings-strike">Strike appears when available.</small></span></label>
+                <label class="setting-check" for="setting-entries"><input id="setting-entries" name="entries_enabled" type="checkbox" checked><span>Allow new paper buys</span></label>
+              </div>
+              <p class="settings-exit-note" id="settings-exit-note">Minimum sale is for profit-taking. Risk exits can sell lower.</p>
+              <details class="advanced-settings"><summary>Risk &amp; entry filters</summary><div class="settings-grid">
+                <label class="setting-field" for="setting-stop-loss"><span>Stop loss <small>¢ below entry</small></span><input id="setting-stop-loss" name="stop_loss_cents" type="number" min="0.1" max="95" step="0.1" inputmode="decimal" required value="12"></label>
+                <label class="setting-field" for="setting-max-spread"><span>Maximum spread <small>¢</small></span><input id="setting-max-spread" name="max_spread_cents" type="number" min="0" max="20" step="0.1" inputmode="decimal" required value="4"></label>
+                <label class="setting-field" for="setting-max-hold"><span>Maximum hold <small>seconds</small></span><input id="setting-max-hold" name="max_hold_seconds" type="number" min="1" max="3600" step="1" inputmode="numeric" required value="180"></label>
+                <label class="setting-field" for="setting-cooldown"><span>Entry cooldown <small>seconds</small></span><input id="setting-cooldown" name="cooldown_seconds" type="number" min="0" max="3600" step="1" inputmode="numeric" required value="20"></label>
+                <label class="setting-field" for="setting-momentum"><span>Minimum momentum <small>basis points</small></span><input id="setting-momentum" name="min_momentum_bps" type="number" min="0.01" max="100" step="0.01" inputmode="decimal" required value="0.75"></label>
+                <label class="setting-field" for="setting-flow"><span>Aligned trade flow <small>% minimum</small></span><input id="setting-flow" name="min_flow_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" required value="12"></label>
+              </div></details>
+            </fieldset>
+            <div class="settings-actions"><button class="settings-save" id="settings-save" type="submit" disabled>Save settings</button><button class="settings-reload" id="settings-reload" type="button" hidden>Reload saved settings</button><span id="settings-status" role="status" aria-live="polite">Open to load your settings.</span></div>
+          </form>
+        </details>
+
         <div class="feed-grid">
           <section class="panel kraken-panel" aria-labelledby="kraken-heading">
             <div class="panel-heading"><div class="source-heading"><span class="source-icon kraken-icon" aria-hidden="true">K</span><div><h2 id="kraken-heading">Kraken</h2><p>Spot market</p></div></div><span class="feed-status" id="kraken-status" data-state="connecting"><span class="status-dot"></span><span>Connecting</span></span></div>

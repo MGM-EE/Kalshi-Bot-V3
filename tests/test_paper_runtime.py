@@ -35,6 +35,7 @@ def synthetic_inputs(second, epoch):
     }
     book = {"ticker": TICKER, "status": "live", "age_ms": 0,
             "version": second + 1, "yes": [[.48, 20]], "no": [[.50, 20]],
+            "strike_price": 66000, "strike_source": "kalshi.floor_strike",
             "close_time": close, "market_status": "open"}
     return feeds, book
 

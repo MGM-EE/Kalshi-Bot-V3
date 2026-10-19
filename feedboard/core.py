@@ -18,6 +18,7 @@ from urllib.parse import quote
 import aiohttp
 
 from .marketdata import TradeFlow, normalize_orderbook
+from .reference import normalize_reference
 
 LOG = logging.getLogger(__name__)
 MAX_PAYLOAD = 256 * 1024
@@ -94,6 +95,7 @@ def normalize_kalshi(payload: Any, limit: int) -> list[dict]:
             "close_time": market.get("close_time"),
             "market_status": market.get("status"),
             "settlement_result": market.get("result") if market.get("result") in ("yes", "no") else None,
+            **normalize_reference(market),
         })
     return result
 
@@ -192,6 +194,7 @@ class Store:
                      "yes": [], "no": [], "settlement_result": None}
         self.book_mono: float | None = None
         self.paper_engine = None
+        self.paper_control = None
         self.trade_flow = TradeFlow()
         self.paper = {"enabled": False, "mode": "paper", "status": "paused",
                       "message": "Paper trading is disabled"}
@@ -242,6 +245,7 @@ class Store:
         p95 = lags[max(0, math.ceil(len(lags) * 0.95) - 1)] if lags else 0
         return {"started_at": self.started_at, "server_time": utc_now(), "mode": "live",
                 "feeds": feeds, "paper": self.paper,
+                "reference": {key: self.book.get(key) for key in ("ticker", "strike_price", "strike_source")},
                 "metrics": {"clients": self.clients, "loop_lag_ms": round(p95, 2)}}
 
     def ready(self) -> bool:
@@ -415,6 +419,8 @@ class Feeds:
                 self.book_version += 1
                 self.store.book = {**depth, "status": "live", "ticker": ticker, "version": self.book_version,
                                    "close_time": market.get("close_time"),
+                                   "strike_price": market.get("strike_price"),
+                                   "strike_source": market.get("strike_source"),
                                    "market_status": market.get("market_status"),
                                    "settlement_result": market.get("settlement_result")
                                    if market.get("market_status") in ("settled", "finalized") else None}

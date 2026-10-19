@@ -39,7 +39,8 @@ def main():
     parser.add_argument("--no-paper", action="store_true", help="Run the data dashboard without paper trading")
     parser.add_argument("--paper-state", type=Path, default=Path("data/paper.sqlite3"), help="Local paper journal path")
     parser.add_argument("--paper-cash", type=float, default=1000, help="Starting simulated cash for a NEW journal")
-    parser.add_argument("--paper-contracts", type=int, default=5, help="Contracts per simulated entry (1–100)")
+    parser.add_argument("--paper-contracts", type=int, default=5,
+                        help="Contracts for a NEW paper journal; saved UI settings take precedence")
     args = parser.parse_args()
     if not 0 < args.timeout <= 300:
         parser.error("--timeout must be between 0 and 300 seconds")
