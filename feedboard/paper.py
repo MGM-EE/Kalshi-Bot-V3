@@ -171,6 +171,8 @@ class PaperEngine:
         self._status = "warming_up"
         self._message = "Warming up BTC momentum (20 seconds)."
         self._mark = None
+        # Ephemeral inputs for a read-only condition display; never journaled.
+        self._condition_context = None
         if state is not None:
             self._restore(state)
 
@@ -333,6 +335,8 @@ class PaperEngine:
         return True
 
     def snapshot(self):
+        from .paper_conditions import build_conditions
+
         position = copy.deepcopy(self.position)
         unrealized = 0.0 if position is None else None
         equity = self.cash if position is None else None
@@ -353,7 +357,8 @@ class PaperEngine:
                 "equity": round(equity, 4) if equity is not None else None,
                 "trade_count": self.trade_count, "wins": self.wins, "position": position,
                 "last_event": copy.deepcopy(self.events[-1]) if self.events else None,
-                "events": copy.deepcopy(list(self.events))}
+                "events": copy.deepcopy(list(self.events)),
+                "conditions": copy.deepcopy(build_conditions(self, self._condition_context))}
 
     def _emit(self, kind, position, price, quantity, pnl, reason, wall_time):
         self.event_seq += 1
@@ -413,6 +418,7 @@ class PaperEngine:
         volatility = pstdev(increments) if len(increments) > 1 else 0
         return {"midpoint": current, "five": (current / old5 - 1) * 10000,
                 "twenty": (current / old20 - 1) * 10000,
+                "volatility": volatility,
                 "floor5": max(config.min_momentum_bps, volatility * .6),
                 "floor20": max(config.min_momentum_bps * 4 / 3, volatility * 1.5)}
 
@@ -518,6 +524,9 @@ class PaperEngine:
         rules = self._position_config() if self.position else self.config
         signal = self._observe(kraken, now, rules)
         flow = self._flow(kraken)
+        self._condition_context = {"feeds": copy.deepcopy(feeds), "book": copy.deepcopy(book),
+                                   "signal": signal, "flow": flow, "now": now,
+                                   "wall_time": wall_time}
         yes, no = _levels(book.get("yes")), _levels(book.get("no"))
         same_book = self.position is None or book.get("ticker") == self.position["ticker"]
         book_fresh = same_book and _fresh(book)

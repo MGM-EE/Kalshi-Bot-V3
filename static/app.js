@@ -8,6 +8,7 @@
   const localClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" });
   const closeClock = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
   const marketRows = new Map();
+  const conditionRows = new Map();
   const history = [];
   const statusLabels = { live: "Live", connecting: "Connecting", retrying: "Retrying", stale: "Stale" };
   const paperStatusLabels = { warming_up: "Warming up", watching: "Watching", holding: "Holding", paused: "Paused", awaiting_settlement: "Awaiting settlement" };
@@ -369,6 +370,76 @@
     el["paper-pnl"].title = position ? "Realized plus open P&L, after estimated fees" : "Realized P&L, after estimated fees";
   }
 
+  function createConditionRow(key) {
+    const row = document.createElement("details");
+    row.className = "condition-check";
+    row.dataset.key = key;
+    const summary = document.createElement("summary");
+    const dot = document.createElement("span");
+    dot.className = "condition-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "condition-label";
+    const state = document.createElement("span");
+    state.className = "condition-state";
+    const detail = document.createElement("p");
+    detail.className = "condition-detail";
+    summary.append(dot, label, state);
+    row.append(summary, detail);
+    const nodes = { row, summary, label, state, detail };
+    conditionRows.set(key, nodes);
+    return nodes;
+  }
+
+  function renderConditions() {
+    const paper = snapshot?.paper;
+    el["conditions-panel"].hidden = !paper?.enabled;
+    if (!paper?.enabled) return;
+    const conditions = paper.conditions;
+    const mode = conditions?.mode === "exit" || !conditions && paper.position ? "Exit" : "Entry";
+    const side = ["up", "down"].includes(conditions?.side) ? ` · ${paperSide(conditions.side)}` : "";
+    setText(el["conditions-heading"], `${mode} conditions${side}`);
+    setText(el["conditions-note"], mode === "Exit" ? "Open trade’s rules · exit triggers are alternatives; a sale still needs executable depth. Select a check for details." : "Saved rules · green means a condition is met, not a guaranteed fill. Select a check for details.");
+    // Compare server timestamps, then advance with a monotonic clock. The device's
+    // wall clock may differ from the server's and must not keep stale checks green.
+    const serverTime = Date.parse(snapshot.server_time);
+    const checkedAt = numeric(conditions?.updated_at) ? conditions.updated_at * 1000 : NaN;
+    const atReceipt = serverTime - checkedAt;
+    const sinceReceipt = Math.max(0, performance.now() - snapshotReceivedAt);
+    const unavailable = !numeric(atReceipt) || atReceipt < -3000;
+    const connected = connectionState === "live";
+    const stale = !connected || unavailable || sinceReceipt > 3000 || Math.max(0, atReceipt) + sinceReceipt > 3000;
+    el["conditions-panel"].dataset.stale = String(stale);
+    const summary = typeof conditions?.summary === "string" && conditions.summary ? conditions.summary : "Waiting for engine checks.";
+    setText(el["conditions-summary"], !connected ? "Waiting for connection · checks will refresh automatically." : unavailable ? summary : stale ? "Checks are stale · waiting for fresh data." : summary);
+    const stateLabels = { met: "Met", building: "Building", blocked: "Not met", disabled: "Off", stale: "Waiting" };
+    const keys = new Set();
+    const items = Array.isArray(conditions?.items) ? conditions.items.slice(0, 24) : [];
+    for (const item of items) {
+      if (!item || typeof item.key !== "string" || keys.has(item.key)) continue;
+      keys.add(item.key);
+      const nodes = conditionRows.get(item.key) || createConditionRow(item.key);
+      const activeState = ["met", "building", "blocked", "disabled"].includes(item.state) ? item.state : "building";
+      const state = stale && activeState !== "disabled" ? "stale" : activeState;
+      const detail = typeof item.detail === "string" ? item.detail : "No additional detail.";
+      nodes.row.dataset.state = state;
+      setText(nodes.label, typeof item.label === "string" ? item.label : item.key);
+      setText(nodes.state, stateLabels[state]);
+      const detailText = state === "stale" ? `Last check (stale): ${detail}` : detail;
+      setText(nodes.detail, detailText);
+      if (nodes.summary.title !== detailText) nodes.summary.title = detailText;
+      const current = el["conditions-list"].children[keys.size - 1];
+      if (current !== nodes.row) el["conditions-list"].insertBefore(nodes.row, current || null);
+    }
+    for (const [key, nodes] of conditionRows) {
+      if (!keys.has(key)) {
+        nodes.row.remove();
+        conditionRows.delete(key);
+      }
+    }
+    el["conditions-empty"].hidden = keys.size > 0;
+  }
+
   function feedAge(feed) {
     if (numeric(feed?.age_ms)) return Math.max(0, feed.age_ms + performance.now() - snapshotReceivedAt);
     const timestamp = Date.parse(feed?.received_at);
@@ -506,6 +577,7 @@
     setText(el["system-state"], connected ? "Live connection · automatic updates" : connectionState === "retrying" ? "Connection interrupted · retrying" : "Establishing connection");
     if (!snapshot) return;
     renderPaper();
+    renderConditions();
     renderFeed("kraken", feeds.kraken);
     renderFeed("kalshi", feeds.kalshi);
     const quote = feeds.kraken?.data || {};

@@ -27,6 +27,14 @@
           <div class="paper-result"><div class="paper-target" id="paper-target" hidden></div><div class="paper-pnl"><span>Net P&amp;L</span><strong id="paper-pnl">—</strong></div></div>
         </section>
 
+        <section class="conditions-panel" id="conditions-panel" aria-labelledby="conditions-heading" data-stale="true" hidden>
+          <div class="conditions-heading"><h2 id="conditions-heading">Entry conditions</h2><span class="conditions-legend">Red: not met · Yellow: building · Green: met</span></div>
+          <p class="conditions-summary" id="conditions-summary">Waiting for current checks.</p>
+          <div class="conditions-list" id="conditions-list"></div>
+          <p class="conditions-empty" id="conditions-empty">Live checks appear when paper trading is ready.</p>
+          <p class="conditions-note" id="conditions-note">Saved rules · green means a condition is met, not a guaranteed fill. Select a check for details.</p>
+        </section>
+
         <details class="trade-settings" id="trade-settings">
           <summary><span>Trade settings</span><span class="settings-summary">Paper trading only</span></summary>
           <form id="settings-form" novalidate>

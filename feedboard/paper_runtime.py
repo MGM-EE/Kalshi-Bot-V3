@@ -129,7 +129,31 @@ class PaperJournal:
 
 
 def paused_snapshot(message: str, previous: dict | None = None):
-    return {**(previous or {}), "enabled": True, "mode": "paper", "status": "paused", "message": message}
+    previous = previous or {}
+    conditions = previous.get("conditions") or {}
+    # A journal failure freezes decisions. Never retain green readiness from the
+    # last successful decision while publishing a paused account.
+    conditions = {**conditions, "mode": conditions.get("mode", "exit" if previous.get("position") else "entry"),
+                  "side": conditions.get("side"), "summary": message, "updated_at": None,
+                  "items": [{**item, "state": "disabled" if item.get("state") == "disabled" else "building",
+                             "detail": "Paper decisions are paused; waiting for the journal."}
+                            for item in conditions.get("items", [])]}
+    return {**previous, "enabled": True, "mode": "paper", "status": "paused",
+            "message": message, "conditions": conditions}
+
+
+def _publication_state(paper):
+    """Publish color changes promptly without a timer causing idle tick bursts.
+
+    Numeric explanations and check timestamps remain current in store.paper;
+    regular quote updates and the existing SSE heartbeat deliver those values.
+    """
+    conditions = paper.get("conditions") or {}
+    return {**paper, "conditions": {
+        "mode": conditions.get("mode"), "side": conditions.get("side"),
+        "summary": conditions.get("summary"),
+        "items": [{key: item.get(key) for key in ("key", "label", "state")}
+                  for item in conditions.get("items", [])]}}
 
 
 async def run_paper(store, journal: PaperJournal, config: PaperConfig):
@@ -214,8 +238,10 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
                     control.attach(engine)
                 current = engine.snapshot()
                 if current != store.paper:
+                    changed = _publication_state(current) != _publication_state(store.paper)
                     store.paper = current
-                    store.revision += 1
+                    if changed:
+                        store.revision += 1
                 await asyncio.sleep(0.1)
             except (OSError, sqlite3.Error, ValueError, RuntimeError):
                 LOG.exception("Paper simulation paused; feeds remain available")
