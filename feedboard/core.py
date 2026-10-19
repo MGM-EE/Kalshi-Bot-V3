@@ -93,6 +93,9 @@ def normalize_kalshi(payload: Any, limit: int) -> list[dict]:
             "no_bid": kalshi_price(market, "no_bid"),
             "no_ask": kalshi_price(market, "no_ask"),
             "last": kalshi_price(market, "last_price"),
+            "volume": number(market.get("volume_fp", market.get("volume"))),
+            "open_interest": number(market.get("open_interest_fp", market.get("open_interest"))),
+            "open_time": market.get("open_time"),
             "close_time": market.get("close_time"),
             "market_status": market.get("status"),
             "settlement_result": market.get("result") if market.get("result") in ("yes", "no") else None,
@@ -114,7 +117,8 @@ def normalize_kraken_ticker(payload: Any, symbol: str) -> dict | None:
         if any(value is None or value <= 0 for value in prices.values()):
             raise ValueError("Kraken ticker contains invalid prices")
         quantities = {key: number(row.get(key)) for key in ("bid_qty", "ask_qty") if key in row}
-        return {"symbol": symbol, **prices, **quantities}
+        timestamps = {"exchange_time": row["timestamp"]} if isinstance(row.get("timestamp"), str) else {}
+        return {"symbol": symbol, **prices, **quantities, **timestamps}
     return None
 
 
@@ -198,6 +202,7 @@ class Store:
         self.paper_control = None
         self.trade_flow = TradeFlow()
         self.settlement_outlook = SettlementOutlook()
+        self.research = None
         self.paper = {"enabled": False, "mode": "paper", "status": "paused",
                       "message": "Paper trading is disabled"}
 
@@ -255,6 +260,7 @@ class Store:
                     self.book_snapshot(), feeds["kraken"], now=now, wall_time=time.time(),
                     enabled=self.settings.paper_enabled and self.settings.series == "KXBTC15M"
                     and self.settings.symbol == "BTC/USD"),
+                "research": self.research.status() if self.research else {"enabled": False, "status": "disabled"},
                 "metrics": {"clients": self.clients, "loop_lag_ms": round(p95, 2)}}
 
     def ready(self) -> bool:

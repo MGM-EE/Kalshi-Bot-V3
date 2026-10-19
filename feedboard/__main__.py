@@ -37,6 +37,11 @@ def main():
     parser.add_argument("--check", action="store_true", help="Get real samples from both feeds, then exit")
     parser.add_argument("--timeout", type=float, default=25, help="Live check deadline in seconds")
     parser.add_argument("--no-paper", action="store_true", help="Run the data dashboard without paper trading")
+    parser.add_argument("--research-state", type=Path, default=Path("data/research.sqlite3"),
+                        help="Separate sampled research journal (enabled by default in paper mode)")
+    parser.add_argument("--no-research", action="store_true", help="Disable research recording")
+    parser.add_argument("--research-max-mib", type=int, default=2048,
+                        help="Pause research snapshots at this file size; default 2048 MiB")
     parser.add_argument("--paper-state", type=Path, default=Path("data/paper.sqlite3"), help="Local paper journal path")
     parser.add_argument("--paper-cash", type=float, default=1000, help="Starting simulated cash for a NEW journal")
     parser.add_argument("--paper-contracts", type=int, default=5,
@@ -44,18 +49,25 @@ def main():
     args = parser.parse_args()
     if not 0 < args.timeout <= 300:
         parser.error("--timeout must be between 0 and 300 seconds")
+    if args.research_max_mib < 16:
+        parser.error("--research-max-mib must be at least 16")
     try:
         settings = Settings(series=args.series, symbol=args.symbol, market_limit=args.market_limit,
                             poll_seconds=args.poll_seconds, paper_enabled=not args.no_paper and not args.check)
         paper_config = (PaperConfig(initial_cash=args.paper_cash, contracts=args.paper_contracts,
                                     series=args.series, symbol=args.symbol) if settings.paper_enabled else None)
+        if settings.paper_enabled and not args.no_research and args.research_state.resolve() == args.paper_state.resolve():
+            raise ValueError("--research-state must be different from --paper-state")
     except ValueError as error:
         parser.error(str(error))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.check:
         raise SystemExit(asyncio.run(check(settings, args.timeout)))
     web.run_app(create_app(settings, paper_path=args.paper_state if settings.paper_enabled else None,
-                            paper_config=paper_config), host=args.host, port=args.port, access_log=None,
+                            paper_config=paper_config,
+                            research_path=args.research_state if settings.paper_enabled and not args.no_research else None,
+                            research_max_bytes=args.research_max_mib * 1024 * 1024),
+                host=args.host, port=args.port, access_log=None,
                 shutdown_timeout=3, print=lambda _: logging.info("Dashboard listening on port %s", args.port))
 
 

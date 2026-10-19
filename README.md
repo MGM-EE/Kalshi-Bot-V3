@@ -91,6 +91,37 @@ Restarting resumes the same account and saved settings, with fresh momentum warm
 
 The same request can optionally include `"apply_exit_controls_to_position": {"ticker": "KXBTC15M-...", "opened_at": 1800000000.0}` using the exact identity from the current snapshot. A stale or closed position returns 409. An explicit malformed or null identity returns 400. A successful response reports `applied_to_position`; applying position-only changes is durable even when the future-entry settings revision does not change.
 
+## Research collection and export
+
+Research recording starts automatically with the normal paper-trading command:
+
+```bash
+uv run python -m feedboard
+```
+
+Look for **Research: recording** in the bottom status bar. Keep the app running; the browser may be closed. Research goes into **`data/research.sqlite3`**, separately from your account in **`data/paper.sqlite3`**. Both are excluded from Git. Updating the app must preserve your entire **`data` folder**.
+
+Once per second the recorder saves normalized Kraken bid/ask prices and available source timestamps, twenty-second trade-flow aggregates, Kalshi listing quotes/volume/open interest, the selected or held contract's five-level book, verified floor, market timing, forecast percentages, entry/exit diagnostics, saved configuration, position, and data-age/status information. Sampled features include momentum, realized volatility, directional efficiency/choppiness, strike distance, and whether the sample falls in your preferred **minutes 5–13**. That timing flag is for analysis; it does not add an entry restriction. Exact decision inputs are additionally recorded when a paper fill's authoritative journal transaction commits. Sessions identify the source-code hash and forecast parameters.
+
+Observed contracts are tracked even when no trade occurs. After close, an independent low-rate detail check saves **official Kalshi outcomes and settlement metadata**. Unknown or missing results stay unresolved; they are never inferred from Kraken. Pending checks survive restarts and resume when the app runs again. This adds occasional post-close detail requests, without increasing quote/book polling. The recorder cannot reconstruct markets or prices missed while the app was stopped.
+
+This is **one-second sampled research data**, not a lossless exchange-event archive. Only the selected/held contract has full book depth; other listed contracts have listing quotes. A live CF Benchmarks index feed and the final-minute index average are **not collected**. These limits and stale/missing data are explicitly marked. Disk writes and compression run outside the feed loop, with bounded queues; recorder failures never change the paper strategy. Queue drops are counted, sequence gaps remain detectable, and the status bar flags problems. No data is deleted automatically.
+
+To export after a test session:
+
+1. Stop the app with **Ctrl+C** and let it finish flushing.
+2. Run:
+
+   ```bash
+   uv run python -m feedboard.export_research
+   ```
+
+3. Upload **every ZIP part with the new matching filename prefix** from **`data/exports`**. The export includes research, outcomes, session provenance, and authoritative paper-trade/account history as JSONL. Each ZIP is independently readable and stays below approximately 25 MiB. The original databases are preserved. The exporter reads committed WAL transactions rather than copying a potentially incomplete database file.
+
+For a larger collection, `--date YYYY-MM-DD` selects research snapshots for one **UTC date**; related outcome metadata and the full paper history are retained. If you use custom journal paths, supply matching `--research-state` and `--paper-state` to the exporter. `--research-only` explicitly omits the paper journal.
+
+Research snapshots pause at a default **2 GiB** storage budget, or when free disk space falls below 128 MiB. The status bar reports a save error. Export/archive the evidence, then start a fresh file with `--research-state data/research-next.sqlite3` (and use that path when exporting). `--research-max-mib` adjusts the budget; `--no-research` disables collection. `--check` and `--no-paper` do not start the recorder. Existing paper balances, trades, settings, entry/exit rules, and the settlement display model are unchanged.
+
 ## Behavior and limits
 
 - Kraken uses public WebSocket v2 `ticker` with `event_trigger: bbo` plus a public `trade` subscription for paper signals. Twenty-second trade flow uses bounded 250 ms buckets and replay protection; historical subscription snapshots are excluded. Failed connections retry with capped jittered backoff and take one REST sample per retry when possible. The dashboard shows the actual transport; REST fallback pauses new paper entries.

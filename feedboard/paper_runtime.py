@@ -234,6 +234,8 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
                         pending = (engine.dump_state(), events)
                 if pending is not None:
                     revision = await asyncio.to_thread(journal.save, pending[0], pending[1], revision)
+                    if store.research is not None:
+                        store.research.record_fill(engine, pending[1])
                     pending = None
                     control.attach(engine)
                 current = engine.snapshot()

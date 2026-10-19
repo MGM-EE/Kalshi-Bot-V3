@@ -11,11 +11,13 @@ from aiohttp import web
 from .core import Settings, Store, start_feeds, stop_feeds
 from .paper import PaperConfig
 from .paper_runtime import PaperControl, PaperJournal, SettingsConflict, SettingsUnavailable, run_paper
+from .research import DEFAULT_MAX_BYTES, ResearchRecorder
 
 STORE = web.AppKey("store", Store)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 MAX_CLIENTS = 8
 JOURNAL = web.AppKey("paper_journal", PaperJournal)
+RESEARCH = web.AppKey("research_recorder", ResearchRecorder)
 
 
 async def paper_settings(request: web.Request):
@@ -125,9 +127,23 @@ async def events(request: web.Request):
 
 
 def create_app(settings: Settings | None = None, *, run_feeds: bool = True,
-               paper_path: Path | None = None, paper_config: PaperConfig | None = None) -> web.Application:
+               paper_path: Path | None = None, paper_config: PaperConfig | None = None,
+               research_path: Path | None = None, research_max_bytes: int = DEFAULT_MAX_BYTES) -> web.Application:
     app = web.Application(client_max_size=4096)
     app[STORE] = Store(settings or Settings())
+    if research_path is not None:
+        recorder = ResearchRecorder(app[STORE], research_path, paper_path=paper_path,
+                                    max_bytes=research_max_bytes)
+        app[RESEARCH] = recorder
+        app[STORE].research = recorder
+
+        async def research_lifecycle(application):
+            await application[RESEARCH].start()
+            yield
+            await application[RESEARCH].close()
+
+        # Flush research after feeds and paper tasks stop, including final fills.
+        app.cleanup_ctx.append(research_lifecycle)
     if paper_path is not None:
         app[JOURNAL] = PaperJournal(paper_path)
         app[STORE].paper_control = PaperControl(paper_config or PaperConfig())

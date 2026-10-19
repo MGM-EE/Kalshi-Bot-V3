@@ -681,6 +681,13 @@
     renderMarkets(Array.isArray(data.markets) ? data.markets : []);
     setText(el["loop-lag"], numeric(snapshot.metrics.loop_lag_ms) ? `${snapshot.metrics.loop_lag_ms.toFixed(1)} ms` : "—");
     setText(el["update-count"], integer.format((feeds.kraken?.updates || 0) + (feeds.kalshi?.updates || 0)));
+    const recording = snapshot.research;
+    const savedAge = Date.parse(snapshot.server_time) - Date.parse(recording?.last_written_at) + Math.max(0, performance.now() - snapshotReceivedAt);
+    const researchState = !recording?.enabled ? "disabled" : recording.error ? "error" : !connected || !numeric(savedAge) || savedAge > 5000 ? "waiting" : recording.dropped_records > 0 || recording.outcome_error ? "warning" : "recording";
+    const researchLabels = { disabled: "Research off", error: "Research: save error", waiting: "Research: waiting", warning: "Research: recording · check", recording: "Research: recording" };
+    setText(el["research-status"], researchLabels[researchState]);
+    el["research-status"].dataset.state = researchState;
+    el["research-status"].title = recording?.enabled ? `${recording.records_written || 0} records saved this session; ${recording.dropped_records || 0} dropped. ${recording.error || recording.outcome_error || "One-second snapshots; separate from your paper account."}` : "Research recording is disabled.";
   }
 
   el["trade-settings"].addEventListener("toggle", () => {

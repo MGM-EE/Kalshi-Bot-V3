@@ -1095,10 +1095,14 @@ h2 {
   background:#657a6b;
 }
 .system-details {
+  flex-wrap:wrap;
   display:flex;
   align-items:center;
   gap:22px;
 }
+#research-status[data-state=recording] { color:var(--green); }
+#research-status[data-state=error] { color:#ee9a94; }
+#research-status[data-state=warning],#research-status[data-state=waiting] { color:var(--amber); }
 .system-details strong {
   font-weight:400;
   color:#a2b0a5;
