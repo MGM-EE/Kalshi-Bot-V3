@@ -1,0 +1,445 @@
+"""Deterministic, public-data-only paper trading. This module cannot place orders.
+
+Prices are dollars per binary contract. All executions sweep observed bid depth;
+asks are the complement of opposite-side bids. Signals are heuristics, not a
+probability model or a promise of profitable or executable exits.
+"""
+from __future__ import annotations
+
+import copy
+import math
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from statistics import pstdev
+
+
+def _num(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _timestamp(value):
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return result.timestamp() if result.tzinfo is not None else None
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        return None
+
+
+def _iso(value):
+    return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _fresh(feed, limit=3000):
+    age = _num(feed.get("age_ms"))
+    return feed.get("status") == "live" and age is not None and 0 <= age <= limit
+
+
+def _levels(rows):
+    """Aggregate validated visible whole-contract depth, sorted by descending bid."""
+    result = {}
+    if not isinstance(rows, (list, tuple)):
+        return []
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) != 2:
+            continue
+        price, size = map(_num, row)
+        if price is not None and size is not None and 0 <= price <= 1 and size >= 1:
+            price = round(price, 6)
+            result[price] = result.get(price, 0) + math.floor(size)
+    return sorted(result.items(), reverse=True)
+
+
+def taker_fee(quantity, price):
+    """Estimated Kalshi general taker fee, rounded UP to a cent per fill."""
+    return math.ceil(max(0, 0.07 * quantity * price * (1 - price) * 100 - 1e-10)) / 100
+
+
+@dataclass(frozen=True)
+class PaperConfig:
+    initial_cash: float = 1000.0
+    contracts: int = 5
+    series: str = "KXBTC15M"
+    symbol: str = "BTC/USD"
+    warmup_seconds: float = 20.0
+    cooldown_seconds: float = 20.0
+    max_hold_seconds: float = 180.0
+    stop_loss: float = 0.12
+
+    def __post_init__(self):
+        numeric = (self.initial_cash, self.warmup_seconds, self.cooldown_seconds,
+                   self.max_hold_seconds, self.stop_loss)
+        if any(not isinstance(v, (int, float)) or _num(v) is None for v in numeric):
+            raise ValueError("paper configuration must be finite")
+        if (isinstance(self.contracts, bool) or not isinstance(self.contracts, int)
+                or not 1 <= self.contracts <= 100 or self.initial_cash <= 0
+                or self.warmup_seconds < 20 or self.cooldown_seconds < 0
+                or self.max_hold_seconds <= 0 or not 0 < self.stop_loss < 1):
+            raise ValueError("invalid paper configuration")
+        if self.series != "KXBTC15M" or self.symbol != "BTC/USD":
+            raise ValueError("paper signals currently support KXBTC15M and BTC/USD only")
+
+
+class PaperEngine:
+    """One small simulated position, bounded state, and no external side effects."""
+
+    def __init__(self, config=None, state=None):
+        self.config = config or PaperConfig()
+        self.cash = self.config.initial_cash
+        self.realized_pnl = 0.0
+        self.trade_count = self.wins = self.event_seq = 0
+        self.position = None
+        self.events = deque(maxlen=20)
+        self.cooldown_until = 0.0
+        self.last_book_versions = {}
+        self.samples = deque(maxlen=4096)
+        self._last_update = None
+        self._last_observation = None
+        self._status = "warming_up"
+        self._message = "Warming up BTC momentum (20 seconds)."
+        self._mark = None
+        if state is not None:
+            self._restore(state)
+
+    def _restore(self, state):
+        try:
+            if not isinstance(state, dict) or state.get("schema") != 1:
+                raise ValueError("unsupported state schema")
+            for key in ("cash", "realized_pnl", "cooldown_until"):
+                value = _num(state[key])
+                if value is None or (key != "realized_pnl" and value < 0):
+                    raise ValueError("invalid monetary or clock state")
+                setattr(self, key, value)
+            for key in ("trade_count", "wins", "event_seq"):
+                value = state[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError("invalid counters")
+                setattr(self, key, value)
+            if self.wins > self.trade_count:
+                raise ValueError("invalid win count")
+            versions = state["last_book_versions"]
+            if (not isinstance(versions, dict) or len(versions) > 128
+                    or any(not isinstance(k, str) or isinstance(v, bool)
+                           or not isinstance(v, int) or v < 0 for k, v in versions.items())):
+                raise ValueError("invalid consumed revisions")
+            self.last_book_versions = dict(versions)
+            position = copy.deepcopy(state["position"])
+            if position is not None:
+                if (not isinstance(position, dict) or position.get("side") not in ("up", "down")
+                        or not isinstance(position.get("ticker"), str)
+                        or not position["ticker"].startswith(self.config.series + "-")
+                        or _timestamp(position.get("close_time")) is None):
+                    raise ValueError("invalid position")
+                for key in ("contracts", "initial_contracts"):
+                    value = position.get(key)
+                    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
+                        raise ValueError("invalid position size")
+                if position["contracts"] > position["initial_contracts"]:
+                    raise ValueError("invalid position remainder")
+                for key in ("entry_price", "exit_target", "entry_fee_remaining", "opened_at", "realized_pnl"):
+                    if _num(position.get(key)) is None:
+                        raise ValueError("invalid position amounts")
+                if (not 0 < position["entry_price"] < 1 or not .80 <= position["exit_target"] <= .95
+                        or position["entry_fee_remaining"] < 0 or position["opened_at"] < 0):
+                    raise ValueError("invalid position amounts")
+            events = state["events"]
+            if not isinstance(events, list) or len(events) > 20:
+                raise ValueError("invalid event list")
+            last_id = 0
+            for event in events:
+                if (not isinstance(event, dict) or not isinstance(event.get("id"), int)
+                        or isinstance(event["id"], bool) or not last_id < event["id"] <= self.event_seq
+                        or event.get("type") not in ("entry", "exit", "settlement")
+                        or event.get("side") not in ("up", "down")
+                        or not isinstance(event.get("ticker"), str)
+                        or not isinstance(event.get("reason"), str)
+                        or _timestamp(event.get("at")) is None
+                        or _num(event.get("price")) is None or not 0 <= event["price"] <= 1
+                        or not isinstance(event.get("contracts"), int) or isinstance(event["contracts"], bool)
+                        or event["contracts"] <= 0
+                        or (event.get("pnl") is not None and _num(event["pnl"]) is None)):
+                    raise ValueError("invalid trade event")
+                last_id = event["id"]
+            self.position = position
+            self.events = deque(copy.deepcopy(events), maxlen=20)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("invalid saved paper state") from exc
+
+    def dump_state(self):
+        return copy.deepcopy({"schema": 1, "cash": self.cash, "realized_pnl": self.realized_pnl,
+                              "trade_count": self.trade_count, "wins": self.wins,
+                              "event_seq": self.event_seq, "position": self.position,
+                              "events": list(self.events), "cooldown_until": self.cooldown_until,
+                              "last_book_versions": self.last_book_versions})
+
+    def snapshot(self):
+        position = copy.deepcopy(self.position)
+        unrealized = 0.0 if position is None else None
+        equity = self.cash if position is None else None
+        if position is not None:
+            position["mark"] = self._mark
+            if self._mark is not None:
+                value = position["contracts"] * self._mark
+                fee = taker_fee(position["contracts"], self._mark)
+                unrealized = value - fee - position["contracts"] * position["entry_price"] - position["entry_fee_remaining"]
+                equity = self.cash + value - fee
+        return {"enabled": True, "mode": "paper", "status": self._status,
+                "message": self._message, "cash": round(self.cash, 4),
+                "realized_pnl": round(self.realized_pnl, 4),
+                "unrealized_pnl": round(unrealized, 4) if unrealized is not None else None,
+                "equity": round(equity, 4) if equity is not None else None,
+                "trade_count": self.trade_count, "wins": self.wins, "position": position,
+                "last_event": copy.deepcopy(self.events[-1]) if self.events else None,
+                "events": copy.deepcopy(list(self.events))}
+
+    def _emit(self, kind, position, price, quantity, pnl, reason, wall_time):
+        self.event_seq += 1
+        event = {"id": self.event_seq, "type": kind, "side": position["side"],
+                 "ticker": position["ticker"], "price": round(price, 6), "contracts": quantity,
+                 "pnl": round(pnl, 6) if pnl is not None else None,
+                 "reason": reason, "at": _iso(wall_time)}
+        self.events.append(event)
+        return copy.deepcopy(event)
+
+    def _consume(self, book):
+        self.last_book_versions[book["ticker"]] = book["version"]
+        while len(self.last_book_versions) > 128:
+            del self.last_book_versions[next(iter(self.last_book_versions))]
+
+    def _available_revision(self, book):
+        version = book.get("version")
+        return (isinstance(version, int) and not isinstance(version, bool) and version >= 0
+                and version > self.last_book_versions.get(book.get("ticker"), -1))
+
+    def _observe(self, kraken, now):
+        data = kraken.get("data", {})
+        valid = (_fresh(kraken) and kraken.get("transport") == "websocket"
+                 and data.get("symbol") == self.config.symbol)
+        bid, ask = _num(data.get("bid")), _num(data.get("ask"))
+        valid = valid and bid is not None and ask is not None and 0 < bid <= ask
+        if not valid:
+            self.samples.clear()
+            self._last_update = None
+            self._last_observation = None
+            return None
+        if self._last_observation is not None and now - self._last_observation > 3:
+            self.samples.clear()
+            self._last_update = None
+        update = (kraken.get("updates"), bid, ask)
+        if update != self._last_update:
+            self.samples.append((now, (bid + ask) / 2))
+            self._last_update = update
+            self._last_observation = now
+        while self.samples and self.samples[0][0] < now - max(25, self.config.warmup_seconds + 5):
+            self.samples.popleft()
+        if len(self.samples) < 5 or now - self.samples[0][0] < self.config.warmup_seconds:
+            return None
+        current = self.samples[-1][1]
+        old5 = next((p for t, p in reversed(self.samples) if t <= now - 5), None)
+        old20 = next((p for t, p in reversed(self.samples) if t <= now - 20), None)
+        if old5 is None or old20 is None:
+            return None
+        increments = [(b[1] / a[1] - 1) * 10000 for a, b in zip(self.samples, list(self.samples)[1:])]
+        volatility = pstdev(increments) if len(increments) > 1 else 0
+        return {"five": (current / old5 - 1) * 10000,
+                "twenty": (current / old20 - 1) * 10000,
+                "floor5": max(.75, volatility * .6), "floor20": max(1., volatility * 1.5)}
+
+    def _flow(self, kraken):
+        flow = kraken.get("data", {}).get("flow")
+        if not isinstance(flow, dict) or not _fresh(kraken):
+            return None
+        age = _num(flow.get("age_ms"))
+        window = _num(flow.get("window_seconds"))
+        values = [_num(flow.get(key)) for key in
+                  ("buy_usd", "sell_usd", "large_buy_usd", "large_sell_usd", "count")]
+        if (age is None or not 0 <= age <= 3000 or window is None or window < 15
+                or any(v is None or v < 0 for v in values) or values[4] < 3):
+            return None
+        buy, sell, large_buy, large_sell, _ = values
+        if buy + sell <= 0:
+            return None
+        large = large_buy + large_sell
+        return {"signed": (buy - sell) / (buy + sell),
+                "large": (large_buy - large_sell) / large if large else 0.0}
+
+    def _target(self, side, signal, flow, bids, asks):
+        direction = 1 if side == "up" else -1
+        momentum = max(0., min(1., min(direction * signal["five"] / signal["floor5"],
+                                       direction * signal["twenty"] / signal["floor20"]) / 3))
+        aggressive = max(0., min(1., direction * flow["signed"]))
+        large = max(0., min(1., direction * flow["large"]))
+        bid_depth = sum(q for _, q in bids[:3])
+        ask_depth = sum(q for _, q in asks[:3])
+        liquidity = bid_depth / (bid_depth + ask_depth) if bid_depth + ask_depth else 0
+        score = .4 * momentum + .35 * aggressive + .15 * large + .1 * liquidity
+        return min(.95, max(.80, round(.80 + .15 * score, 2)))
+
+    @staticmethod
+    def _sweep(levels, quantity, floor=None, ceiling=None):
+        fills = []
+        remaining = quantity
+        for price, available in levels:
+            if floor is not None and price < floor - 1e-9:
+                break
+            if ceiling is not None and price > ceiling + 1e-9:
+                break
+            count = min(remaining, available)
+            if count:
+                fills.append((price, count))
+                remaining -= count
+            if remaining == 0:
+                break
+        return fills
+
+    def _finish(self, wall_time):
+        self.trade_count += 1
+        self.wins += int(self.position["realized_pnl"] > 0)
+        self.position = None
+        self._mark = None
+        self.cooldown_until = wall_time + self.config.cooldown_seconds
+
+    def _exit(self, book, levels, reason, wall_time, settlement=None):
+        position = self.position
+        quantity = position["contracts"]
+        if settlement is not None:
+            fills = [(float(settlement), quantity)]
+        elif not self._available_revision(book):
+            return []
+        else:
+            # Risk exits sweep available depth. Profit exits never fill below the trigger.
+            floor = .95 if reason == "hard_95c" else position["exit_target"] if reason == "dynamic_target" else None
+            fills = self._sweep(levels, quantity, floor=floor)
+        filled = sum(q for _, q in fills)
+        if not filled:
+            return []
+        proceeds = sum(p * q for p, q in fills)
+        fee = sum(taker_fee(q, p) for p, q in fills) if settlement is None else 0
+        entry_fee = position["entry_fee_remaining"] * filled / quantity
+        pnl = proceeds - fee - position["entry_price"] * filled - entry_fee
+        self.cash += proceeds - fee
+        self.realized_pnl += pnl
+        position["realized_pnl"] += pnl
+        position["entry_fee_remaining"] -= entry_fee
+        position["contracts"] -= filled
+        if settlement is None:
+            self._consume(book)
+        event = self._emit("exit" if settlement is None else "settlement", position,
+                           proceeds / filled, filled, pnl, reason, wall_time)
+        if not position["contracts"]:
+            self._finish(wall_time)
+            self._status, self._message = "watching", "Paper exit complete; cooling down."
+        else:
+            self._message = "Partial paper exit; waiting for fresh depth for the remainder."
+        return [event]
+
+    def step(self, feeds, book, *, now, wall_time):
+        """Process a snapshot once. Returned events are newly simulated fills only."""
+        if _num(now) is None or _num(wall_time) is None:
+            raise ValueError("step clocks must be finite")
+        kraken, kalshi = feeds.get("kraken", {}), feeds.get("kalshi", {})
+        signal = self._observe(kraken, now)
+        flow = self._flow(kraken)
+        yes, no = _levels(book.get("yes")), _levels(book.get("no"))
+        same_book = self.position is None or book.get("ticker") == self.position["ticker"]
+        book_fresh = same_book and _fresh(book)
+        book_tradable = book.get("market_status") in ("open", "active")
+        side = self.position["side"] if self.position else None
+        bids = yes if side == "up" else no
+        asks = sorted([(round(1 - p, 6), q) for p, q in (no if side == "up" else yes)])
+        self._mark = bids[0][0] if self.position and book_fresh and book_tradable and bids else None
+        if self.position:
+            self._status, self._message = "holding", "Holding paper " + self.position["side"].upper() + "."
+            result = book.get("settlement_result") if same_book else None
+            if result in ("yes", "no"):
+                payout = int((result == "yes") == (side == "up"))
+                return self._exit(book, bids, "verified_settlement", wall_time, settlement=payout)
+            close = _timestamp(self.position["close_time"])
+            remaining_time = close - wall_time
+            if remaining_time <= 0 or (same_book and book.get("market_status") in
+                                       ("closed", "settled", "finalized")):
+                self._status = "awaiting_settlement"
+                self._message = "Market closed; waiting for an official settlement result."
+                return []
+            if signal and flow and book_fresh and book_tradable and bids and asks:
+                self.position["exit_target"] = self._target(side, signal, flow, bids, asks)
+            if not book_fresh or not book_tradable or not bids:
+                self._message = "Holding; waiting for fresh executable Kalshi depth."
+                return []
+            bid = bids[0][0]
+            direction = 1 if side == "up" else -1
+            reason = None
+            if bid >= .95:
+                reason = "hard_95c"
+            elif bid >= self.position["exit_target"]:
+                reason = "dynamic_target"
+            elif bid <= self.position["entry_price"] - self.config.stop_loss:
+                reason = "stop_loss"
+            elif remaining_time <= 30:
+                reason = "expiry_risk"
+            elif wall_time - self.position["opened_at"] >= self.config.max_hold_seconds:
+                reason = "max_hold"
+            elif (signal and flow and direction * signal["five"] <= -signal["floor5"]
+                  and direction * flow["signed"] <= -.12):
+                reason = "momentum_reversal"
+            return self._exit(book, bids, reason, wall_time) if reason else []
+        if not (_fresh(kalshi) and _fresh(kraken) and book_fresh):
+            self._status, self._message = "paused", "Waiting for fresh market data."
+            return []
+        if kraken.get("transport") != "websocket" or kraken.get("data", {}).get("symbol") != self.config.symbol:
+            self._status, self._message = "paused", "Paper signals require live BTC/USD WebSocket data."
+            return []
+        ticker = book.get("ticker")
+        if not isinstance(ticker, str) or not ticker.startswith(self.config.series + "-"):
+            self._status, self._message = "paused", "Paper trading supports Bitcoin 15-minute markets."
+            return []
+        close = _timestamp(book.get("close_time"))
+        if (close is None or close - wall_time < 90 or not book_tradable
+                or book.get("settlement_result") in ("yes", "no")):
+            self._status, self._message = "watching", "Waiting for an open market with at least 90 seconds remaining."
+            return []
+        if signal is None:
+            self._status, self._message = "warming_up", "Warming up BTC momentum (20 seconds)."
+            return []
+        self._status, self._message = "watching", "Watching momentum, trade flow, and visible liquidity."
+        if flow is None or wall_time < self.cooldown_until or not self._available_revision(book):
+            return []
+        for candidate, direction in (("up", 1), ("down", -1)):
+            if (direction * signal["five"] < signal["floor5"]
+                    or direction * signal["twenty"] < signal["floor20"]
+                    or direction * flow["signed"] < .12 or direction * flow["large"] < -.35):
+                continue
+            bids = yes if candidate == "up" else no
+            asks = sorted([(round(1 - p, 6), q) for p, q in (no if candidate == "up" else yes)])
+            if not bids or not asks:
+                continue
+            ask, bid = asks[0][0], bids[0][0]
+            spread = ask - bid
+            if not .10 <= ask <= .75 or not -1e-9 <= spread <= .04 + 1e-9:
+                continue
+            fills = self._sweep(asks, self.config.contracts, ceiling=ask + .01)
+            quantity = sum(q for _, q in fills)
+            if quantity != self.config.contracts:
+                continue
+            notional = sum(p * q for p, q in fills)
+            fee = sum(taker_fee(q, p) for p, q in fills)
+            if notional + fee > self.cash:
+                continue
+            self.position = {"ticker": ticker, "side": candidate, "contracts": quantity,
+                             "initial_contracts": quantity, "entry_price": notional / quantity,
+                             "entry_fee_remaining": fee, "opened_at": wall_time,
+                             "close_time": book["close_time"], "realized_pnl": 0.,
+                             "exit_target": self._target(candidate, signal, flow, bids, asks)}
+            self.cash -= notional + fee
+            self._consume(book)
+            self._mark = bid
+            self._status, self._message = "holding", "Paper bought " + candidate.upper() + "."
+            return [self._emit("entry", self.position, notional / quantity, quantity, None,
+                               "aligned_momentum_flow", wall_time)]
+        return []

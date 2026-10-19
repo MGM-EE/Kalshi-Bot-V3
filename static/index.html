@@ -18,8 +18,14 @@
       <main>
         <div class="page-heading">
           <div><div class="eyebrow">THE LIVE DESK</div><h1>A clear view of the market.</h1><p class="intro">Bitcoin on Kraken. Prediction markets on Kalshi. Just the essentials.</p></div>
-          <span class="read-only"><svg aria-hidden="true" viewBox="0 0 16 16" width="13" height="13"><path d="M3 13 13 3M4 3h9v9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg> PUBLIC DATA · READ ONLY</span>
+          <span class="read-only"><svg aria-hidden="true" viewBox="0 0 16 16" width="13" height="13"><path d="M3 13 13 3M4 3h9v9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg> PUBLIC DATA · PAPER TRADES</span>
         </div>
+
+        <section class="paper-panel" id="paper-panel" aria-labelledby="paper-heading" data-status="warming_up">
+          <div class="paper-mode"><h2 id="paper-heading">Paper</h2><span id="paper-status">Connecting</span></div>
+          <div class="paper-activity"><strong id="paper-position">Waiting for a setup</strong><span id="paper-action" role="status" aria-live="polite" aria-atomic="true">Simulated trades · no real orders</span></div>
+          <div class="paper-result"><div class="paper-target" id="paper-target" hidden></div><div class="paper-pnl"><span>Net P&amp;L</span><strong id="paper-pnl">—</strong></div></div>
+        </section>
 
         <div class="feed-grid">
           <section class="panel kraken-panel" aria-labelledby="kraken-heading">

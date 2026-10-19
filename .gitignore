@@ -8,3 +8,8 @@ __pycache__/
 .coverage
 artifacts/
 *.log
+data/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm

@@ -13,8 +13,11 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import getproxies, proxy_bypass
+from urllib.parse import quote
 
 import aiohttp
+
+from .marketdata import TradeFlow, normalize_orderbook
 
 LOG = logging.getLogger(__name__)
 MAX_PAYLOAD = 256 * 1024
@@ -85,8 +88,12 @@ def normalize_kalshi(payload: Any, limit: int) -> list[dict]:
             "title": market.get("title") or market["ticker"],
             "yes_bid": kalshi_price(market, "yes_bid"),
             "yes_ask": kalshi_price(market, "yes_ask"),
+            "no_bid": kalshi_price(market, "no_bid"),
+            "no_ask": kalshi_price(market, "no_ask"),
             "last": kalshi_price(market, "last_price"),
             "close_time": market.get("close_time"),
+            "market_status": market.get("status"),
+            "settlement_result": market.get("result") if market.get("result") in ("yes", "no") else None,
         })
     return result
 
@@ -103,7 +110,8 @@ def normalize_kraken_ticker(payload: Any, symbol: str) -> dict | None:
         prices = {key: number(row.get(key)) for key in ("bid", "ask", "last")}
         if any(value is None or value <= 0 for value in prices.values()):
             raise ValueError("Kraken ticker contains invalid prices")
-        return {"symbol": symbol, **prices}
+        quantities = {key: number(row.get(key)) for key in ("bid_qty", "ask_qty") if key in row}
+        return {"symbol": symbol, **prices, **quantities}
     return None
 
 
@@ -140,6 +148,7 @@ class Settings:
     stale_seconds: float = 15.0
     retry_base: float = 0.5
     retry_cap: float = 15.0
+    paper_enabled: bool = False
 
     def __post_init__(self):
         if not all(math.isfinite(value) for value in (self.poll_seconds, self.request_timeout,
@@ -179,6 +188,20 @@ class Store:
         self.revision = 0
         self.clients = 0
         self.loop_lags = deque(maxlen=300)
+        self.book = {"status": "connecting", "ticker": None, "version": 0,
+                     "yes": [], "no": [], "settlement_result": None}
+        self.book_mono: float | None = None
+        self.paper_engine = None
+        self.trade_flow = TradeFlow()
+        self.paper = {"enabled": False, "mode": "paper", "status": "paused",
+                      "message": "Paper trading is disabled"}
+
+    def book_snapshot(self) -> dict:
+        age = (time.monotonic() - self.book_mono) * 1000 if self.book_mono is not None else None
+        result = {**self.book, "age_ms": round(age) if age is not None else None}
+        if result["status"] == "live" and age is not None and age > 3000:
+            result["status"] = "stale"
+        return result
 
     def update(self, name: str, data: dict, transport: str, request_ms: float | None = None):
         feed = self.feeds[name]
@@ -209,13 +232,17 @@ class Store:
             status = feed.status
             if status == "live" and age is not None and age > self.settings.stale_seconds:
                 status = "stale"
+            data = feed.data
+            if name == "kraken" and self.settings.paper_enabled:
+                data = {**data, "flow": self.trade_flow.snapshot(now)}
             feeds[name] = {"status": status, "transport": feed.transport, "error": feed.error,
                            "received_at": feed.received_at, "age_ms": round(age * 1000) if age is not None else None,
-                           "request_ms": feed.request_ms, "updates": feed.updates, "data": feed.data}
+                           "request_ms": feed.request_ms, "updates": feed.updates, "data": data}
         lags = sorted(self.loop_lags)
         p95 = lags[max(0, math.ceil(len(lags) * 0.95) - 1)] if lags else 0
         return {"started_at": self.started_at, "server_time": utc_now(), "mode": "live",
-                "feeds": feeds, "metrics": {"clients": self.clients, "loop_lag_ms": round(p95, 2)}}
+                "feeds": feeds, "paper": self.paper,
+                "metrics": {"clients": self.clients, "loop_lag_ms": round(p95, 2)}}
 
     def ready(self) -> bool:
         feeds = self.snapshot()["feeds"]
@@ -227,6 +254,20 @@ class Feeds:
         self.store = store
         self.settings = store.settings
         self.session = session
+        self.flow = store.trade_flow
+        self.book_version = time.time_ns() // 1000
+
+    def flow_quote(self, data: dict) -> dict:
+        if self.settings.paper_enabled:
+            return {**data, "flow": self.flow.snapshot(time.monotonic())}
+        return data
+
+    def update_flow(self, payload: dict):
+        self.flow.add_payload(payload, self.settings.symbol, time.monotonic(), wall_time=time.time())
+        feed = self.store.feeds["kraken"]
+        if feed.transport == "websocket" and feed.received_mono is not None:
+            feed.data = self.flow_quote(feed.data)
+            self.store.revision += 1
 
     def backoff(self, failures: int) -> float:
         cap = min(self.settings.retry_cap, self.settings.retry_base * 2 ** min(failures - 1, 10))
@@ -287,18 +328,27 @@ class Feeds:
                         "channel": "ticker", "symbol": [self.settings.symbol], "event_trigger": "bbo",
                         "snapshot": True,
                     }})
+                    if self.settings.paper_enabled:
+                        await ws.send_json({"method": "subscribe", "params": {
+                            "channel": "trade", "symbol": [self.settings.symbol], "snapshot": False,
+                        }})
                     # Receive deadlines include heartbeats: a connected but stalled feed must recover.
                     last_quote = time.monotonic()
                     while True:
-                        remaining = max(0.01, 30 - (time.monotonic() - last_quote))
+                        remaining = 30 - (time.monotonic() - last_quote)
+                        if remaining <= 0:
+                            raise TimeoutError("Kraken ticker stopped updating")
                         message = await asyncio.wait_for(ws.receive(), timeout=remaining)
                         if message.type == aiohttp.WSMsgType.TEXT:
                             payload = json.loads(message.data)
                             if isinstance(payload, dict) and payload.get("success") is False:
-                                raise ValueError("Kraken rejected the ticker subscription")
+                                raise ValueError("Kraken rejected a feed subscription")
+                            if self.settings.paper_enabled and isinstance(payload, dict) and payload.get("channel") == "trade":
+                                self.update_flow(payload)
+                                continue
                             data = normalize_kraken_ticker(payload, self.settings.symbol)
                             if data:
-                                self.store.update("kraken", data, "websocket")
+                                self.store.update("kraken", self.flow_quote(data), "websocket")
                                 last_quote = time.monotonic()
                         elif message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE,
                                               aiohttp.WSMsgType.ERROR):
@@ -317,13 +367,71 @@ class Feeds:
                     payload, elapsed = await self.get_json(self.settings.kraken_rest_url,
                                                            {"pair": self.settings.symbol})
                     data = normalize_kraken_rest(payload, self.settings.symbol)
-                    self.store.update("kraken", data, "rest", elapsed)
+                    self.store.update("kraken", self.flow_quote(data), "rest", elapsed)
                 except (aiohttp.ClientError, TimeoutError, ValueError) as rest_error:
                     self.store.fail("kraken", rest_error)
                     if isinstance(rest_error, aiohttp.ClientResponseError) and rest_error.status == 429:
                         value = rest_error.headers.get("Retry-After") if rest_error.headers else None
                         delay = max(delay, retry_after_seconds(value))
                 await asyncio.sleep(delay)
+
+    async def orderbook(self):
+        """One small book, including a held contract after it leaves the open list."""
+        failures = 0
+        while True:
+            started = time.monotonic()
+            position = self.store.paper_engine.snapshot().get("position") if self.store.paper_engine else None
+            markets = self.store.feeds["kalshi"].data.get("markets", [])
+            selected = position or (min(markets, key=lambda item: item.get("close_time") or "9999") if markets else None)
+            if not selected or not isinstance(selected.get("ticker"), str):
+                await asyncio.sleep(0.25)
+                continue
+            ticker = selected["ticker"]
+            if ticker != self.store.book.get("ticker"):
+                self.store.book = {"status": "connecting", "ticker": ticker, "version": 0,
+                                   "yes": [], "no": [], "settlement_result": None}
+                self.store.book_mono = None
+            delay = self.settings.poll_seconds
+            try:
+                # Preserve a custom API origin for tests and documented runtime overrides.
+                url = self.settings.kalshi_url.rstrip("/") + "/" + quote(ticker, safe="")
+                market = next((m for m in markets if m["ticker"] == ticker), None)
+                listing = self.store.feeds["kalshi"]
+                listing_fresh = (listing.status == "live" and listing.received_mono is not None
+                                 and time.monotonic() - listing.received_mono <= 3)
+                try:
+                    scheduled_close = datetime.fromisoformat(selected.get("close_time", "").replace("Z", "+00:00")).timestamp()
+                except (ValueError, AttributeError, TypeError):
+                    scheduled_close = None
+                if market is None or not listing_fresh or (position and scheduled_close is not None and scheduled_close <= time.time()):
+                    detail, _ = await self.get_json(url, {})
+                    rows = normalize_kalshi({"markets": [detail.get("market")]}, 1)
+                    market = rows[0]
+                if market.get("settlement_result") in ("yes", "no") and market.get("market_status") in ("settled", "finalized"):
+                    depth = {"yes": [], "no": []}
+                else:
+                    payload, _ = await self.get_json(url + "/orderbook", {"depth": 5})
+                    depth = normalize_orderbook(payload)
+                self.book_version += 1
+                self.store.book = {**depth, "status": "live", "ticker": ticker, "version": self.book_version,
+                                   "close_time": market.get("close_time"),
+                                   "market_status": market.get("market_status"),
+                                   "settlement_result": market.get("settlement_result")
+                                   if market.get("market_status") in ("settled", "finalized") else None}
+                self.store.book_mono = time.monotonic()
+                self.store.revision += 1
+                failures = 0
+                delay = max(0.05, delay - (time.monotonic() - started))
+            except (aiohttp.ClientError, TimeoutError, ValueError, AttributeError) as error:
+                if self.store.book.get("status") != "retrying":
+                    LOG.warning("Kalshi liquidity: %s", error)
+                self.store.book = {**self.store.book, "status": "retrying", "error": str(error)[:160]}
+                self.store.revision += 1
+                failures += 1
+                delay = max(self.settings.poll_seconds, self.backoff(failures))
+                if isinstance(error, aiohttp.ClientResponseError) and error.status == 429:
+                    delay = max(delay, retry_after_seconds(error.headers.get("Retry-After") if error.headers else None))
+            await asyncio.sleep(delay)
 
 
 async def monitor_loop(store: Store):
@@ -342,6 +450,8 @@ async def start_feeds(store: Store) -> tuple[aiohttp.ClientSession, list[asyncio
     tasks = [asyncio.create_task(feeds.kalshi(), name="kalshi"),
              asyncio.create_task(feeds.kraken(), name="kraken"),
              asyncio.create_task(monitor_loop(store), name="loop-monitor")]
+    if store.settings.paper_enabled:
+        tasks.append(asyncio.create_task(feeds.orderbook(), name="kalshi-book"))
     return session, tasks
 
 

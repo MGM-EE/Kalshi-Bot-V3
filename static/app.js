@@ -3,18 +3,26 @@
 (() => {
   const el = Object.fromEntries([...document.querySelectorAll("[id]")].map(node => [node.id, node]));
   const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const signedDollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: "exceptZero" });
   const integer = new Intl.NumberFormat("en-US");
   const localClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" });
   const closeClock = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
   const marketRows = new Map();
   const history = [];
   const statusLabels = { live: "Live", connecting: "Connecting", retrying: "Retrying", stale: "Stale" };
+  const paperStatusLabels = { warming_up: "Warming up", watching: "Watching", holding: "Holding", paused: "Paused", awaiting_settlement: "Awaiting settlement" };
+  const paperEventQueue = [];
   let snapshot = null;
   let frame = null;
   let connectionState = "connecting";
   let snapshotReceivedAt = 0;
   let lastObservation = null;
   let latestSnapshotTime = 0;
+  let paperInitialized = false;
+  let lastPaperEventId = 0;
+  let lastPaperEvent = null;
+  let activePaperEvent = null;
+  let paperEventTimer = null;
 
   function setText(node, value) {
     if (node.textContent !== value) node.textContent = value;
@@ -30,6 +38,119 @@
 
   function cents(value) {
     return numeric(value) ? `${(value * 100).toLocaleString("en-US", { maximumFractionDigits: 1 })}¢` : "—";
+  }
+
+  function validPaperEvent(event) {
+    return event && Number.isSafeInteger(event.id) && event.id > 0 && ["entry", "exit", "settlement"].includes(event.type) && ["up", "down"].includes(event.side);
+  }
+
+  function resetPaperNotifications() {
+    paperEventQueue.length = 0;
+    activePaperEvent = null;
+    if (paperEventTimer !== null) clearTimeout(paperEventTimer);
+    paperEventTimer = null;
+    el["paper-panel"].classList.remove("paper-flash-green", "paper-flash-red");
+  }
+
+  function collectPaperEvents(paper) {
+    if (!paper?.enabled) return;
+    const candidates = (Array.isArray(paper.events) ? paper.events.slice(-20) : []).filter(validPaperEvent);
+    if (validPaperEvent(paper.last_event)) candidates.push(paper.last_event);
+    const eventsById = new Map(candidates.map(event => [event.id, event]));
+    const events = [...eventsById.values()].sort((a, b) => a.id - b.id);
+    const latest = events.at(-1) || null;
+    if (!paperInitialized) {
+      paperInitialized = true;
+      lastPaperEventId = latest?.id || 0;
+      lastPaperEvent = latest;
+      return; // Existing trades are history, not new activity on page load.
+    }
+    // A restarted paper session can have a fresh event counter.
+    if (!latest && paper.last_event === null) {
+      lastPaperEventId = 0;
+      lastPaperEvent = null;
+      resetPaperNotifications();
+      return;
+    }
+    if (latest && latest.id < lastPaperEventId && Date.parse(latest.at) > Date.parse(lastPaperEvent?.at)) {
+      lastPaperEventId = 0;
+      resetPaperNotifications();
+    }
+    for (const event of events) {
+      if (event.id <= lastPaperEventId) continue;
+      paperEventQueue.push(event);
+      lastPaperEventId = event.id;
+      lastPaperEvent = event;
+    }
+    if (paperEventQueue.length > 8) paperEventQueue.splice(0, paperEventQueue.length - 8);
+  }
+
+  function paperSide(side) {
+    return side === "up" ? "Up" : "Down";
+  }
+
+  function paperEventText(event) {
+    const action = event.type === "entry" ? "Bought" : event.type === "settlement" ? "Settled" : "Sold";
+    const quantity = numeric(event.contracts) ? ` ×${integer.format(event.contracts)}` : "";
+    const price = numeric(event.price) ? ` at ${cents(event.price)}` : "";
+    const pnl = event.type !== "entry" && numeric(event.pnl) ? ` · ${signedDollars.format(event.pnl)}` : "";
+    return `${action} ${paperSide(event.side)}${quantity}${price}${pnl}`;
+  }
+
+  function paperOutcome(event) {
+    if (event.type === "entry") return "green";
+    return numeric(event.pnl) ? event.pnl < 0 ? "red" : "green" : "";
+  }
+
+  function startPaperNotification() {
+    if (activePaperEvent || paperEventTimer !== null || !paperEventQueue.length || connectionState !== "live") return;
+    activePaperEvent = paperEventQueue.shift();
+    const outcome = paperOutcome(activePaperEvent);
+    if (outcome) el["paper-panel"].classList.add(`paper-flash-${outcome}`);
+    paperEventTimer = setTimeout(() => {
+      el["paper-panel"].classList.remove("paper-flash-green", "paper-flash-red");
+      activePaperEvent = null;
+      // Let the previous animation finish before the next queued trade.
+      paperEventTimer = setTimeout(() => {
+        paperEventTimer = null;
+        scheduleRender();
+      }, 40);
+      scheduleRender();
+    }, 1500);
+  }
+
+  function renderPaper() {
+    const paper = snapshot?.paper;
+    if (!paper) return;
+    el["paper-panel"].hidden = !paper.enabled;
+    if (!paper.enabled) return;
+    const connected = connectionState === "live";
+    const feedsLive = feedState(snapshot.feeds.kraken) === "live" && feedState(snapshot.feeds.kalshi) === "live";
+    const state = !connected || !feedsLive && paper.status !== "awaiting_settlement" ? "paused" : paper.status;
+    el["paper-panel"].dataset.status = state;
+    setText(el["paper-status"], !connected ? connectionState === "retrying" ? "Reconnecting" : "Connecting" : paperStatusLabels[state] || "Watching");
+    const position = paper.position;
+    let positionText = state === "warming_up" ? "Collecting a little history" : state === "paused" ? "Waiting for fresh data" : "Waiting for a setup";
+    if (position) positionText = `Holding ${paperSide(position.side)} ×${integer.format(position.contracts)}`;
+    else if (lastPaperEvent && lastPaperEvent.type !== "entry") positionText = `Last exit · ${paperSide(lastPaperEvent.side)}`;
+    setText(el["paper-position"], positionText);
+    el["paper-position"].title = position?.ticker || lastPaperEvent?.ticker || "Simulated trades only";
+    if (connected && feedsLive) startPaperNotification();
+    const displayEvent = activePaperEvent || lastPaperEvent;
+    let action = displayEvent ? `${activePaperEvent ? "" : "Last trade · "}${paperEventText(displayEvent)}` : "Simulated trades · no real orders";
+    if (!connected) action = "Waiting for connection · showing last known state";
+    else if (!feedsLive && state !== "awaiting_settlement") action = "Waiting for fresh feeds · paper entries paused";
+    else if (!displayEvent && typeof paper.message === "string" && paper.message) action = paper.message;
+    setText(el["paper-action"], action);
+    el["paper-panel"].dataset.outcome = connected && feedsLive && displayEvent ? paperOutcome(displayEvent) : "";
+    if (!connected || !feedsLive) el["paper-panel"].classList.remove("paper-flash-green", "paper-flash-red");
+    const target = position && numeric(position.exit_target) ? `Exit ${cents(position.exit_target)} · cap 95¢` : "";
+    setText(el["paper-target"], target);
+    el["paper-target"].hidden = !target;
+    const pnl = numeric(paper.realized_pnl) && (!position || numeric(paper.unrealized_pnl)) ? paper.realized_pnl + (position ? paper.unrealized_pnl : 0) : null;
+    setText(el["paper-pnl"], numeric(pnl) ? signedDollars.format(pnl) : "—");
+    el["paper-pnl"].dataset.direction = numeric(pnl) ? pnl > 0 ? "positive" : pnl < 0 ? "negative" : "flat" : "";
+    el["paper-pnl"].title = position ? "Realized plus open P&L, after estimated fees" : "Realized P&L, after estimated fees";
   }
 
   function feedAge(feed) {
@@ -66,6 +187,7 @@
     latestSnapshotTime = timestamp;
     snapshot = next;
     snapshotReceivedAt = performance.now();
+    collectPaperEvents(next.paper);
     const feed = next.feeds.kraken;
     if (feed?.received_at && feed.received_at !== lastObservation) {
       lastObservation = feed.received_at;
@@ -167,6 +289,7 @@
     setText(el["session-label"], connected ? liveCount === 2 ? "All feeds live" : `${liveCount} of 2 feeds live` : connectionState === "retrying" ? "Reconnecting" : "Connecting");
     setText(el["system-state"], connected ? "Live connection · automatic updates" : connectionState === "retrying" ? "Connection interrupted · retrying" : "Establishing connection");
     if (!snapshot) return;
+    renderPaper();
     renderFeed("kraken", feeds.kraken);
     renderFeed("kalshi", feeds.kalshi);
     const quote = feeds.kraken?.data || {};
