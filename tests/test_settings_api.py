@@ -12,6 +12,8 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from tests.paper_fixtures import baseline_config
+
 from feedboard.paper import PaperConfig, PaperEngine
 from feedboard.paper_runtime import PaperJournal
 from feedboard.strategy_settings import public_settings
@@ -23,7 +25,7 @@ PATH = "/api/paper/settings"
 
 def seeded_position():
     """Create a genuine entry using explicitly synthetic, fresh market input."""
-    engine = PaperEngine()
+    engine = PaperEngine(baseline_config())
     epoch = time.time()
     close = datetime.fromtimestamp(epoch + 900, timezone.utc).isoformat()
     for second in range(21):

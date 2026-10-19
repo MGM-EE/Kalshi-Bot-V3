@@ -6,6 +6,7 @@ All inputs come from the last engine step; observing this view never samples a f
 from __future__ import annotations
 
 from .paper import _fresh, _levels, _num, _timestamp, taker_fee
+from .entry_filters import in_entry_window
 
 
 def _item(key, label, state, detail):
@@ -89,10 +90,13 @@ def _entry_conditions(engine, context):
     close = _timestamp(book.get("close_time"))
     remaining = close - wall_time if close is not None else None
     market_ok = (remaining is not None and remaining >= 90 and book.get("market_status") in ("open", "active")
-                 and book.get("settlement_result") not in ("yes", "no"))
+                 and book.get("settlement_result") not in ("yes", "no")
+                 and in_entry_window(config, close, wall_time))
     timing = (f"{remaining:.0f}s left; " if remaining is not None else "Close time unavailable; ")
     add("market", "Market / entry timing", "met" if market_ok else "blocked", timing +
-        "open market and ≥90s remaining required. The 5–13 minute window is not enforced.")
+        "open market and ≥90s remaining required. " +
+        (f"Entries from minute {config.entry_start_minute:g} inclusive to {config.entry_end_minute:g} exclusive."
+         if config.entry_window_enabled else "Custom entry window is off."))
     cooldown = max(0., engine.cooldown_until - wall_time)
     add("cooldown", "Entries / cooldown", "blocked" if not config.entries_enabled else
         "building" if cooldown else "met", "New entries paused." if not config.entries_enabled else
@@ -159,6 +163,27 @@ def _entry_conditions(engine, context):
     add("book_revision", "Unused book update", "met" if revision else "building",
         "Fresh book revision available for a simulated fill." if revision else
         "Waiting for a new book revision; previously used depth cannot be filled twice.")
+    quality = engine._entry_quality.view()
+    efficiency = quality["efficiency"]
+    if not config.choppiness_enabled:
+        add("choppiness", "Trend quality", "disabled", "Choppiness filter is off.")
+    elif efficiency is None:
+        add("choppiness", "Trend quality", "building",
+            f"{min(60, quality['coverage_seconds']):.1f}/60s of fresh BTC trend history; gaps restart warmup.")
+    else:
+        add("choppiness", "Trend quality", _progress(efficiency, config.min_trend_efficiency),
+            f"60s path efficiency {efficiency * 100:.1f}% / ≥{config.min_trend_efficiency * 100:g}%; "
+            "straightness, not settlement probability.")
+    if not config.confirmation_enabled:
+        add("confirmation", "Signal confirmation", "disabled", "Signal confirmation is off.")
+    else:
+        same = quality["confirmation_side"] == side and quality["confirmation_ticker"] == ticker
+        elapsed = quality["confirmation_elapsed_seconds"] if same else 0.
+        ready = (same and elapsed >= config.confirmation_seconds
+                 and quality["confirmation_new_quote"] and quality["confirmation_new_book"])
+        add("confirmation", "Signal confirmation", "met" if ready else "building" if same else "blocked",
+            f"{elapsed:.1f}/{config.confirmation_seconds:g}s of all entry checks met on the same side; "
+            "requires new BTC and book updates. Failures, changes, and stale data restart the timer.")
     active = [item for item in items if item["state"] != "disabled"]
     all_met = all(item["state"] == "met" for item in active)
     summary = (f"{side.upper()} entry conditions met." if all_met and side else

@@ -5,7 +5,9 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from feedboard.paper import PaperConfig, PaperEngine
+from tests.paper_fixtures import baseline_config
+
+from feedboard.paper import PaperEngine
 from tests.test_paper import EPOCH, book, feeds, iso, warm
 
 
@@ -14,7 +16,7 @@ def items(engine):
 
 
 def watch(**config_values):
-    config = PaperConfig(entries_enabled=False, require_toward_strike=False, **config_values)
+    config = baseline_config(entries_enabled=False, require_toward_strike=False, **config_values)
     engine, events = warm(PaperEngine(config))
     assert not events
     engine.set_config(replace(config, entries_enabled=True))
@@ -23,7 +25,7 @@ def watch(**config_values):
 
 class PaperConditionTests(unittest.TestCase):
     def test_cold_start_and_conditions_are_not_persisted(self):
-        engine = PaperEngine()
+        engine = PaperEngine(baseline_config())
         self.assertEqual(engine.snapshot()["conditions"], {
             "mode": "entry", "side": None, "summary": "Waiting for the first market update.",
             "updated_at": None, "items": [],
@@ -32,7 +34,7 @@ class PaperConditionTests(unittest.TestCase):
         engine.step({}, {}, now=0, wall_time=EPOCH)
         view = engine.snapshot()["conditions"]
         self.assertEqual(view["updated_at"], EPOCH)
-        self.assertEqual(len(view["items"]), 14)
+        self.assertEqual(len(view["items"]), 16)
         self.assertEqual(items(engine)["data"]["state"], "building")
         json.dumps(view, allow_nan=False)
 
@@ -53,7 +55,7 @@ class PaperConditionTests(unittest.TestCase):
         self.assertEqual(items(engine)["flow"]["state"], "building")
 
     def test_toward_strike_candidate_does_not_borrow_opposite_side_flow_or_momentum(self):
-        engine, events = warm(PaperEngine(), strike_price=64900, strike_source="kalshi.floor_strike")
+        engine, events = warm(PaperEngine(baseline_config()), strike_price=64900, strike_source="kalshi.floor_strike")
         self.assertEqual(events, [])
         self.assertEqual(engine.snapshot()["conditions"]["side"], "down")
         rows = items(engine)
@@ -64,7 +66,7 @@ class PaperConditionTests(unittest.TestCase):
         self.assertIn("DOWN ask 52.0¢", rows["buy_price"]["detail"])
 
     def test_unverified_floor_and_percentage_band_are_waiting_not_green(self):
-        engine, events = warm(PaperEngine(PaperConfig(floor_distance_enabled=True)),
+        engine, events = warm(PaperEngine(baseline_config(floor_distance_enabled=True)),
                               strike_price=65100, strike_source="inferred")
         self.assertEqual(events, [])
         self.assertEqual(items(engine)["toward_strike"]["state"], "building")
@@ -93,7 +95,7 @@ class PaperConditionTests(unittest.TestCase):
                 json.dumps(engine.snapshot()["conditions"], allow_nan=False)
 
     def test_actual_depth_cap_fees_and_consumed_revision(self):
-        engine, events = warm(PaperEngine(PaperConfig(require_toward_strike=False)),
+        engine, events = warm(PaperEngine(baseline_config(require_toward_strike=False)),
                               no=[[.5, 2], [.48, 20]])
         self.assertEqual(events, [])
         self.assertEqual(items(engine)["depth"]["state"], "blocked")
@@ -106,14 +108,14 @@ class PaperConditionTests(unittest.TestCase):
         engine.cooldown_until = EPOCH + 30
         self.assertEqual(items(engine)["cooldown"]["state"], "building")
 
-    def test_timing_reports_actual_90_second_rule_without_enforcing_requested_window(self):
+    def test_disabling_window_still_reports_actual_90_second_rule(self):
         engine = watch()
         engine.set_config(replace(engine.config, entries_enabled=False))
         engine.step(feeds(65084, 22), book(22, close_time=iso(EPOCH + 111)),
                     now=21, wall_time=EPOCH + 21)
         self.assertEqual(items(engine)["market"]["state"], "met")
         self.assertIn("90s left", items(engine)["market"]["detail"])
-        self.assertIn("not enforced", items(engine)["market"]["detail"])
+        self.assertIn("window is off", items(engine)["market"]["detail"])
         engine.step(feeds(65088, 23), book(23, close_time=iso(EPOCH + 111)),
                     now=22, wall_time=EPOCH + 22)
         self.assertEqual(items(engine)["market"]["state"], "blocked")
@@ -132,7 +134,7 @@ class PaperConditionTests(unittest.TestCase):
         self.assertEqual(items(engine)["book_revision"]["state"], "building")
 
     def test_position_uses_frozen_rules_until_explicit_exit_override(self):
-        config = PaperConfig(require_toward_strike=False, hold_to_settlement=True,
+        config = baseline_config(require_toward_strike=False, hold_to_settlement=True,
                              dynamic_exit_min=.90, min_exit_price=.85)
         engine, _ = warm(PaperEngine(config))
         target = engine.position["exit_target"]
@@ -150,7 +152,7 @@ class PaperConditionTests(unittest.TestCase):
         self.assertEqual(engine.position["exit_target"], target)
 
     def test_disabled_exit_switches_and_stale_or_wrong_book_never_claim_ready_sale(self):
-        config = PaperConfig(require_toward_strike=False, exit_on_stop_loss=False,
+        config = baseline_config(require_toward_strike=False, exit_on_stop_loss=False,
                              exit_on_reversal=False, exit_on_max_hold=False, exit_before_expiry=False)
         engine, _ = warm(PaperEngine(config))
         for change in ("stale", "wrong", "empty"):
@@ -180,7 +182,7 @@ class PaperConditionTests(unittest.TestCase):
         self.assertIn("waiting for fresh unused depth", engine.snapshot()["conditions"]["summary"])
 
     def test_settlement_wait_and_verified_result_transition(self):
-        engine, _ = warm(PaperEngine(PaperConfig(require_toward_strike=False, hold_to_settlement=True)))
+        engine, _ = warm(PaperEngine(baseline_config(require_toward_strike=False, hold_to_settlement=True)))
         engine.step(feeds(65084, 22), book(22), now=21, wall_time=EPOCH + 901)
         self.assertEqual(items(engine)["settlement"]["state"], "building")
         self.assertIn("official settlement", engine.snapshot()["conditions"]["summary"])
@@ -200,8 +202,8 @@ class PaperConditionTests(unittest.TestCase):
         self.assertIn("momentum reversal triggered", items(engine)["sale_ready"]["detail"].lower())
 
     def test_snapshot_reads_never_change_strategy_or_persisted_state(self):
-        observed = PaperEngine(PaperConfig(require_toward_strike=False))
-        control = PaperEngine(PaperConfig(require_toward_strike=False))
+        observed = PaperEngine(baseline_config(require_toward_strike=False))
+        control = PaperEngine(baseline_config(require_toward_strike=False))
         for second in range(28):
             depth = book(second + 1, yes=[[.96, 2]] if second >= 23 else [[.48, 20]])
             kwargs = {"now": second, "wall_time": EPOCH + second}

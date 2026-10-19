@@ -6,7 +6,9 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from feedboard.paper import EXIT_CONTROL_FIELDS, FLOOR_BAND_FIELDS, PaperConfig, PaperEngine, taker_fee
+from tests.paper_fixtures import baseline_config
+
+from feedboard.paper import ENTRY_FILTER_FIELDS, EXIT_CONTROL_FIELDS, FLOOR_BAND_FIELDS, PaperEngine, taker_fee
 
 
 EPOCH = 1_800_000_000.
@@ -45,7 +47,7 @@ def book(version=22, side="up", bid=.48, quantity=20, **extra):
 
 
 def opened(config=None, side="up"):
-    config = config or PaperConfig(require_toward_strike=False)
+    config = config or baseline_config(require_toward_strike=False)
     engine = PaperEngine(config)
     direction = 1 if side == "up" else -1
     for second in range(21):
@@ -72,17 +74,17 @@ def reversing_step(engine, *, when=875, bid=.35, version=22):
 
 class ExitPolicyTests(unittest.TestCase):
     def test_defaults_preserve_old_early_exit_policy_and_require_actual_booleans(self):
-        config = PaperConfig()
+        config = baseline_config()
         self.assertEqual(control_values(config), {"hold_to_settlement": False,
                          "exit_on_stop_loss": True, "exit_on_reversal": True,
                          "exit_on_max_hold": True, "exit_before_expiry": True})
         for name in EXIT_CONTROL_FIELDS:
             for value in (0, 1, "false", None, [], 0.0):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
-                    PaperConfig(**{name: value})
+                    baseline_config(**{name: value})
 
     def test_hold_blocks_simultaneous_stop_reversal_time_and_expiry_for_both_sides(self):
-        config = PaperConfig(require_toward_strike=False, hold_to_settlement=True)
+        config = baseline_config(require_toward_strike=False, hold_to_settlement=True)
         for side in ("up", "down"):
             engine = opened(config, side)
             original = engine.dump_state()
@@ -98,7 +100,7 @@ class ExitPolicyTests(unittest.TestCase):
         for side in ("up", "down"):
             for flag, reason in EARLY.items():
                 with self.subTest(side=side, reason=reason):
-                    config = PaperConfig(require_toward_strike=False, **{**disabled, flag: True})
+                    config = baseline_config(require_toward_strike=False, **{**disabled, flag: True})
                     engine = opened(config, side)
                     events = reversing_step(engine)
                     self.assertEqual(len(events), 1)
@@ -118,7 +120,7 @@ class ExitPolicyTests(unittest.TestCase):
                                          (True, .95, "hard_95c"),
                                          (False, .96, "hard_95c")):
                 with self.subTest(side=side, dynamic=dynamic, bid=bid):
-                    config = PaperConfig(require_toward_strike=False, hold_to_settlement=True,
+                    config = baseline_config(require_toward_strike=False, hold_to_settlement=True,
                                          dynamic_exit_enabled=dynamic, dynamic_exit_min=.80,
                                          dynamic_exit_max=.80)
                     engine = opened(config, side)
@@ -132,7 +134,7 @@ class ExitPolicyTests(unittest.TestCase):
         for side in ("up", "down"):
             for payout in (0., 1.):
                 with self.subTest(side=side, payout=payout):
-                    config = PaperConfig(require_toward_strike=False, hold_to_settlement=True)
+                    config = baseline_config(require_toward_strike=False, hold_to_settlement=True)
                     engine = opened(config, side)
                     entry_price = engine.position["entry_price"]
                     entry_fee = engine.position["entry_fee_remaining"]
@@ -162,14 +164,14 @@ class ExitControlMigrationTests(unittest.TestCase):
     def legacy_state(self):
         state = opened().dump_state()
         for rules in (state["config"], state["position"]["rules"], state["events"][0]["rules"]):
-            for name in (*EXIT_CONTROL_FIELDS, *FLOOR_BAND_FIELDS):
+            for name in (*EXIT_CONTROL_FIELDS, *FLOOR_BAND_FIELDS, *ENTRY_FILTER_FIELDS):
                 del rules[name]
         return state
 
     def test_complete_old_shapes_migrate_account_position_and_original_entry_rules(self):
         original = self.legacy_state()
         restored = PaperEngine(state=json.loads(json.dumps(original)))
-        defaults = control_values(PaperConfig())
+        defaults = control_values(baseline_config())
         self.assertEqual(control_values(restored.config), defaults)
         self.assertEqual(restored.snapshot()["position"]["exit_controls"], defaults)
         self.assertEqual(restored.cash, original["cash"])
@@ -188,7 +190,7 @@ class ExitControlMigrationTests(unittest.TestCase):
         restored = PaperEngine(state=state)
         restored.set_config(replace(restored.config, hold_to_settlement=True,
                                     **dict.fromkeys(EARLY, False)))
-        self.assertEqual(restored.snapshot()["position"]["exit_controls"], control_values(PaperConfig()))
+        self.assertEqual(restored.snapshot()["position"]["exit_controls"], control_values(baseline_config()))
         event = restored.step({}, book(bid=.35), now=21, wall_time=EPOCH + 21)[0]
         self.assertEqual(event["reason"], "stop_loss")
 
@@ -214,7 +216,7 @@ class ExitControlMigrationTests(unittest.TestCase):
 
 class ApplyOpenPositionControlsTests(unittest.TestCase):
     def test_future_settings_do_not_change_open_position_until_explicit_apply(self):
-        original_config = PaperConfig(require_toward_strike=False, stop_loss=.17,
+        original_config = baseline_config(require_toward_strike=False, stop_loss=.17,
                                       max_hold_seconds=250, contracts=7, min_exit_price=.82,
                                       dynamic_exit_min=.82, dynamic_exit_max=.93)
         engine = opened(original_config)

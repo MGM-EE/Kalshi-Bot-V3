@@ -239,6 +239,8 @@ class ResearchAsyncTests(unittest.IsolatedAsyncioTestCase):
         fill = next(value for kind, value in rows(self.path) if kind == "paper_fill")
         self.assertEqual(fill["event"]["reason"], "hard_95c")
         self.assertEqual(fill["decision_inputs"]["book"]["yes"][0][0], .95)
+        self.assertIn("entry_quality", fill["decision_inputs"])
+        self.assertEqual(fill["decision_inputs"]["entry_quality"]["lookback_seconds"], 60)
         self.assertTrue(fill["recorded_after_paper_commit"])
         self.assertEqual(PaperJournal(paper).load()[0]["event_seq"], 2)
 

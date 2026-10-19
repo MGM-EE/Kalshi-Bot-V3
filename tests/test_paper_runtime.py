@@ -12,8 +12,10 @@ from unittest.mock import Mock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from tests.paper_fixtures import baseline_config
+
 from feedboard.core import Settings, Store
-from feedboard.paper import PaperConfig, PaperEngine
+from feedboard.paper import PaperEngine
 from feedboard.paper_runtime import PaperJournal, run_paper
 from feedboard.web import JOURNAL, create_app
 
@@ -42,7 +44,7 @@ def synthetic_inputs(second, epoch):
 
 def open_account():
     """Generate a real engine entry from explicitly synthetic fresh inputs."""
-    engine = PaperEngine()
+    engine = PaperEngine(baseline_config())
     epoch = time.time()
     for second in range(21):
         feeds, book = synthetic_inputs(second, epoch)
@@ -134,7 +136,7 @@ class JournalTests(LocalAsyncTests):
 
 class RuntimeTests(LocalAsyncTests):
     async def test_first_real_entry_reaches_snapshot_after_its_atomic_commit(self):
-        engine = PaperEngine()
+        engine = PaperEngine(baseline_config())
         epoch, mono = time.time() - 20, time.monotonic() - 20
         for second in range(20):
             feeds, book = synthetic_inputs(second, epoch)
@@ -157,7 +159,7 @@ class RuntimeTests(LocalAsyncTests):
 
         # Supply an actually warmed real engine so the integration test needs no clock overrides.
         with patch("feedboard.paper_runtime.PaperEngine", return_value=engine):
-            task = asyncio.create_task(run_paper(store, ObservingJournal(self.path), PaperConfig()))
+            task = asyncio.create_task(run_paper(store, ObservingJournal(self.path), baseline_config()))
             try:
                 await self.until(lambda: (store.paper.get("last_event") or {}).get("id") == 1)
                 self.assertEqual(len(before_commit), 1)
@@ -178,7 +180,7 @@ class RuntimeTests(LocalAsyncTests):
         journal = PaperJournal(self.path)
         journal.save(state, state["events"], 0)
         store = Store(Settings())
-        task = asyncio.create_task(run_paper(store, journal, PaperConfig(initial_cash=20)))
+        task = asyncio.create_task(run_paper(store, journal, baseline_config(initial_cash=20)))
         try:
             await self.until(lambda: store.paper.get("enabled"))
             self.assertEqual(store.paper["status"], "holding")
@@ -196,7 +198,7 @@ class RuntimeTests(LocalAsyncTests):
         journal.save(damaged, [{"id": 9, "original": True}], 0)
         store = Store(Settings())
         with self.assertLogs("feedboard.paper_runtime", level="ERROR"):
-            await run_paper(store, journal, PaperConfig())
+            await run_paper(store, journal, baseline_config())
         self.assertEqual(store.paper["status"], "paused")
         self.assertIsNone(store.paper_engine)
         self.assertEqual(journal.load(), (damaged, 1))
@@ -207,7 +209,7 @@ class RuntimeTests(LocalAsyncTests):
         self.path.write_bytes(original)
         store = Store(Settings())
         with self.assertLogs("feedboard.paper_runtime", level="ERROR"):
-            await run_paper(store, PaperJournal(self.path), PaperConfig())
+            await run_paper(store, PaperJournal(self.path), baseline_config())
         self.assertEqual(store.paper["status"], "paused")
         self.assertEqual(self.path.read_bytes(), original)
 
@@ -233,7 +235,7 @@ class RuntimeTests(LocalAsyncTests):
                     raise TimeoutError("test did not release blocked journal")
                 return super().save(state, events, revision)
 
-        task = asyncio.create_task(run_paper(store, BlockingJournal(self.path), PaperConfig()))
+        task = asyncio.create_task(run_paper(store, BlockingJournal(self.path), baseline_config()))
         try:
             await asyncio.wait_for(save_started.wait(), 5)
             self.assertTrue(all(identity != threading.get_ident() for identity in thread_ids))
@@ -288,7 +290,7 @@ class RuntimeTests(LocalAsyncTests):
         with patch("feedboard.paper_runtime.PaperEngine", return_value=engine), \
                 patch("feedboard.paper_runtime.asyncio.sleep", controlled_sleep), \
                 self.assertLogs("feedboard.paper_runtime", level="ERROR"):
-            task = asyncio.create_task(run_paper(store, FailingOnceJournal(self.path), PaperConfig()))
+            task = asyncio.create_task(run_paper(store, FailingOnceJournal(self.path), baseline_config()))
             try:
                 await asyncio.wait_for(retry_waiting.wait(), 5)
                 self.assertEqual(store.paper["status"], "paused")

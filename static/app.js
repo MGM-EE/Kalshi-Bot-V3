@@ -25,7 +25,7 @@
   let activePaperEvent = null;
   let paperEventTimer = null;
   const exitControlNames = ["hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal", "exit_on_max_hold", "exit_before_expiry"];
-  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent", "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", ...exitControlNames];
+  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent", "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", "entry_window_enabled", "entry_start_minute", "entry_end_minute", "confirmation_enabled", "confirmation_seconds", "choppiness_enabled", "min_trend_efficiency_percent", ...exitControlNames];
   const settingInputs = Object.fromEntries(settingNames.map(name => [name, el["settings-form"].elements.namedItem(name)]));
   const settingsState = { loaded: false, attempted: false, available: false, busy: false, saving: false, revision: null, saved: null, conflict: false, applyPosition: null };
 
@@ -92,6 +92,10 @@
     el["floor-band-range"].setAttribute("aria-disabled", String(!band));
     settingInputs.max_above_floor_percent.disabled = !band;
     settingInputs.max_below_floor_percent.disabled = !band;
+    settingInputs.entry_start_minute.disabled = !settingInputs.entry_window_enabled.checked;
+    settingInputs.entry_end_minute.disabled = !settingInputs.entry_window_enabled.checked;
+    settingInputs.confirmation_seconds.disabled = !settingInputs.confirmation_enabled.checked;
+    settingInputs.min_trend_efficiency_percent.disabled = !settingInputs.choppiness_enabled.checked;
     renderFloorBandPreview();
     const hold = settingInputs.hold_to_settlement.checked;
     for (const name of exitControlNames.slice(1)) settingInputs[name].disabled = hold;
@@ -144,6 +148,7 @@
     if (settings.max_buy_cents >= settings.min_sell_cents) return { message: "Maximum buy must be below the minimum profit-sale price.", fields: { max_buy_cents: true, min_sell_cents: true } };
     if (settings.dynamic_enabled && settings.min_sell_cents > settings.dynamic_min_cents) return { message: "The dynamic range must start at or above the minimum profit-sale price.", fields: { min_sell_cents: true, dynamic_min_cents: true } };
     if (settings.dynamic_enabled && settings.dynamic_min_cents > settings.dynamic_max_cents) return { message: "The dynamic range must run from a lower price to a higher price, up to 95¢.", fields: { dynamic_min_cents: true, dynamic_max_cents: true } };
+    if (settings.entry_start_minute >= settings.entry_end_minute) return { message: "Entry start minute must be before entry end minute.", fields: { entry_start_minute: true, entry_end_minute: true } };
     return null;
   }
 

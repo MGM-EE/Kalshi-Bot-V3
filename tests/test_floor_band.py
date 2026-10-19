@@ -7,14 +7,16 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from tests.paper_fixtures import baseline_config
+
 from feedboard.core import Settings
-from feedboard.paper import FLOOR_BAND_FIELDS, PaperConfig, PaperEngine
+from feedboard.paper import ENTRY_FILTER_FIELDS, FLOOR_BAND_FIELDS, PaperEngine
 from feedboard.web import STORE, create_app
 from tests.test_paper import EPOCH, book, feeds
 
 
 def entry(mid, *, side="up", strike=100000, source="kalshi.floor_strike", **settings):
-    config = PaperConfig(require_toward_strike=False, floor_distance_enabled=True, **settings)
+    config = baseline_config(require_toward_strike=False, floor_distance_enabled=True, **settings)
     engine = PaperEngine(config)
     direction = 1 if side == "up" else -1
     events = []
@@ -56,7 +58,7 @@ class FloorBandTests(unittest.TestCase):
                 self.assertIn("verified", engine.snapshot()["message"])
 
     def test_disabled_filter_preserves_prior_behavior_without_reference(self):
-        engine = PaperEngine(PaperConfig(require_toward_strike=False))
+        engine = PaperEngine(baseline_config(require_toward_strike=False))
         events = []
         for second in range(21):
             events.extend(engine.step(feeds(65000 + second * 4, second + 1), book(second + 1),
@@ -74,7 +76,7 @@ class FloorBandTests(unittest.TestCase):
         engine, _ = entry(100000)
         state = engine.dump_state()
         for rules in (state["config"], state["position"]["rules"], state["events"][0]["rules"]):
-            for key in FLOOR_BAND_FIELDS:
+            for key in (*FLOOR_BAND_FIELDS, *ENTRY_FILTER_FIELDS):
                 rules.pop(key)
             self.assertEqual(len(rules), 24)
         original = copy.deepcopy(state)
@@ -92,7 +94,7 @@ class FloorBandTests(unittest.TestCase):
         for key in ("max_above_floor_percent", "max_below_floor_percent"):
             for value in (-.001, 100.001, float("nan"), float("inf"), True, "0.1"):
                 with self.subTest(key=key, value=value), self.assertRaises(ValueError):
-                    PaperConfig(**{key: value})
+                    baseline_config(**{key: value})
 
 
 class FloorBandApiTests(unittest.IsolatedAsyncioTestCase):

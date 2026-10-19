@@ -22,6 +22,10 @@ _NUMBERS = {
     "min_flow_percent": ("flow_imbalance", 100, "Minimum aligned flow", 0, 100),
     "max_above_floor_percent": ("max_above_floor_percent", 1, "Maximum above floor percent", 0, 100),
     "max_below_floor_percent": ("max_below_floor_percent", 1, "Maximum below floor percent", 0, 100),
+    "entry_start_minute": ("entry_start_minute", 1, "Entry start minute", 0, 15),
+    "entry_end_minute": ("entry_end_minute", 1, "Entry end minute", 0, 15),
+    "confirmation_seconds": ("confirmation_seconds", 1, "Signal confirmation seconds", .1, 30),
+    "min_trend_efficiency_percent": ("min_trend_efficiency", 100, "Minimum trend efficiency percent", 0, 100),
 }
 _BOOLEANS = {
     "dynamic_enabled": "dynamic_exit_enabled",
@@ -33,6 +37,9 @@ _BOOLEANS = {
     "exit_on_max_hold": "exit_on_max_hold",
     "exit_before_expiry": "exit_before_expiry",
     "floor_distance_enabled": "floor_distance_enabled",
+    "entry_window_enabled": "entry_window_enabled",
+    "confirmation_enabled": "confirmation_enabled",
+    "choppiness_enabled": "choppiness_enabled",
 }
 
 
@@ -90,4 +97,6 @@ def apply_public_settings(config: PaperConfig, values: dict) -> PaperConfig:
         raise ValueError("Dynamic sell minimum cannot exceed its maximum.")
     if current["dynamic_enabled"] and current["dynamic_min_cents"] < current["min_sell_cents"]:
         raise ValueError("Dynamic sell minimum cannot be below minimum sell while dynamic exits are enabled.")
+    if current["entry_start_minute"] >= current["entry_end_minute"]:
+        raise ValueError("Entry start minute must be before entry end minute.")
     return replace(config, **updates)

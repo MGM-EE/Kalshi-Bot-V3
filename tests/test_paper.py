@@ -5,7 +5,9 @@ import unittest
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 
-from feedboard.paper import PaperConfig, PaperEngine, taker_fee
+from tests.paper_fixtures import baseline_config
+
+from feedboard.paper import PaperEngine, taker_fee
 
 
 EPOCH = 1_800_000_000.
@@ -37,7 +39,7 @@ def book(version=1, **values):
 
 def warm(engine=None, direction=1, **book_values):
     # Existing execution/accounting scenarios isolate the original momentum rules.
-    engine = engine if engine is not None else PaperEngine(PaperConfig(require_toward_strike=False))
+    engine = engine if engine is not None else PaperEngine(baseline_config(require_toward_strike=False))
     events = []
     for second in range(21):
         events.extend(engine.step(feeds(65000 + direction * second * 4, second + 1, direction),
@@ -63,7 +65,7 @@ class PaperEntryTests(unittest.TestCase):
         self.assertEqual(engine.position["contracts"], 5)
 
     def test_flat_prices_finish_warmup_without_triggering_entry(self):
-        engine = PaperEngine()
+        engine = PaperEngine(baseline_config())
         for second in range(21):
             self.assertEqual(engine.step(feeds(update=second), book(second), now=second,
                                          wall_time=EPOCH + second), [])
@@ -71,7 +73,7 @@ class PaperEntryTests(unittest.TestCase):
         self.assertIsNone(engine.position)
 
     def test_warmup_requires_elapsed_time_and_at_least_five_distinct_updates(self):
-        engine = PaperEngine()
+        engine = PaperEngine(baseline_config())
         # Fresh ages alone cannot turn one repeatedly observed quote into a history.
         for second in range(21):
             self.assertEqual(engine.step(feeds(), book(second), now=second,
@@ -85,7 +87,7 @@ class PaperEntryTests(unittest.TestCase):
                  ("kraken", "status", "retrying"), ("kraken", "age_ms", 3001),
                  ("kraken", "transport", "rest")]
         for feed_name, field, value in cases:
-            engine = PaperEngine()
+            engine = PaperEngine(baseline_config())
             for second in range(21):
                 data = feeds(65000 + second * 4, second)
                 data[feed_name][field] = value
@@ -97,7 +99,7 @@ class PaperEntryTests(unittest.TestCase):
 
     def test_stale_flow_opposite_large_prints_and_weak_momentum_do_not_enter(self):
         for condition in ("stale", "opposite_large", "weak", "missing", "short_window"):
-            engine = PaperEngine()
+            engine = PaperEngine(baseline_config())
             for second in range(21):
                 data = feeds(65000 + second * (.01 if condition == "weak" else 4), second)
                 flow = data["kraken"]["data"]["flow"]
@@ -133,7 +135,7 @@ class PaperEntryTests(unittest.TestCase):
         for values in ({"symbol": "ETH/USD"}, {"series": "OTHER"}, {"contracts": 0},
                        {"initial_cash": float("nan")}, {"warmup_seconds": 5}):
             with self.assertRaises(ValueError):
-                PaperConfig(**values)
+                baseline_config(**values)
 
 
 class PaperSettingsTests(unittest.TestCase):
@@ -145,11 +147,11 @@ class PaperSettingsTests(unittest.TestCase):
         for name in numeric_fields:
             for value in (True, False, float("nan"), float("inf"), "0.5", None):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
-                    PaperConfig(**{name: value})
+                    baseline_config(**{name: value})
         for name in ("dynamic_exit_enabled", "require_toward_strike", "entries_enabled"):
             for value in (0, 1, "true", None):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
-                    PaperConfig(**{name: value})
+                    baseline_config(**{name: value})
 
     def test_config_rejects_conflicting_prices_and_out_of_range_controls(self):
         cases = ({"min_entry_price": 0}, {"min_entry_price": .76}, {"max_entry_price": .80},
@@ -162,13 +164,13 @@ class PaperSettingsTests(unittest.TestCase):
                  {"max_hold_seconds": 0}, {"max_hold_seconds": 3601}, {"contracts": True})
         for values in cases:
             with self.subTest(values=values), self.assertRaises(ValueError):
-                PaperConfig(**values)
+                baseline_config(**values)
         # Disabled dynamic controls can be prepared independently of the fixed target.
-        config = PaperConfig(dynamic_exit_enabled=False, dynamic_exit_min=.10, dynamic_exit_max=.20)
+        config = baseline_config(dynamic_exit_enabled=False, dynamic_exit_min=.10, dynamic_exit_max=.20)
         self.assertEqual(config.min_exit_price, .80)
 
     def test_custom_buy_range_includes_every_fill_and_its_average(self):
-        config = PaperConfig(require_toward_strike=False, min_entry_price=.40, max_entry_price=.55,
+        config = baseline_config(require_toward_strike=False, min_entry_price=.40, max_entry_price=.55,
                              min_exit_price=.60, dynamic_exit_min=.65, dynamic_exit_max=.75)
         engine, events = warm(PaperEngine(config), yes=[[.39, 20]], no=[[.60, 2], [.59, 3]])
         self.assertEqual(len(events), 1)
@@ -177,21 +179,21 @@ class PaperSettingsTests(unittest.TestCase):
         _, events = warm(PaperEngine(replace(config, min_entry_price=.51)))
         self.assertEqual(events, [])
         # A qualifying best ask cannot allow one-cent slippage above the user's cap.
-        _, events = warm(PaperEngine(PaperConfig(require_toward_strike=False)),
+        _, events = warm(PaperEngine(baseline_config(require_toward_strike=False)),
                          yes=[[.73, 20]], no=[[.25, 2], [.24, 3]])
         self.assertEqual(events, [])
-        _, events = warm(PaperEngine(PaperConfig(require_toward_strike=False)),
+        _, events = warm(PaperEngine(baseline_config(require_toward_strike=False)),
                          yes=[[.73, 20]], no=[[.25, 5]])
         self.assertEqual(events[0]["price"], .75)
 
     def test_user_spread_momentum_and_flow_filters_can_prevent_entries(self):
         for values in ({"max_spread": .01}, {"min_momentum_bps": 20}, {"flow_imbalance": .90}):
             with self.subTest(values=values):
-                _, events = warm(PaperEngine(PaperConfig(require_toward_strike=False, **values)))
+                _, events = warm(PaperEngine(baseline_config(require_toward_strike=False, **values)))
                 self.assertEqual(events, [])
 
     def test_fixed_profit_target_is_exact_and_never_fills_below_floor(self):
-        config = PaperConfig(require_toward_strike=False, max_entry_price=.55, min_exit_price=.60,
+        config = baseline_config(require_toward_strike=False, max_entry_price=.55, min_exit_price=.60,
                              dynamic_exit_enabled=False)
         engine, _ = warm(PaperEngine(config))
         self.assertEqual(engine.position["exit_target"], .60)
@@ -203,7 +205,7 @@ class PaperSettingsTests(unittest.TestCase):
         self.assertEqual(engine.position["contracts"], 3)
 
     def test_custom_dynamic_range_adapts_and_hard95_remains_absolute_trigger(self):
-        config = PaperConfig(require_toward_strike=False, max_entry_price=.55, min_exit_price=.60,
+        config = baseline_config(require_toward_strike=False, max_entry_price=.55, min_exit_price=.60,
                              dynamic_exit_min=.65, dynamic_exit_max=.75)
         engine, _ = warm(PaperEngine(config))
         old_target = engine.position["exit_target"]
@@ -217,7 +219,7 @@ class PaperSettingsTests(unittest.TestCase):
         self.assertEqual(event["reason"], "hard_95c")
 
     def test_open_position_rules_freeze_and_entry_pause_does_not_block_exits(self):
-        config = PaperConfig(require_toward_strike=False, cooldown_seconds=45)
+        config = baseline_config(require_toward_strike=False, cooldown_seconds=45)
         engine, _ = warm(PaperEngine(config))
         frozen = copy.deepcopy(engine.position["rules"])
         engine.set_config(replace(config, entries_enabled=False, dynamic_exit_enabled=False,
@@ -232,7 +234,7 @@ class PaperSettingsTests(unittest.TestCase):
         self.assertEqual(engine.snapshot()["status"], "paused")
 
     def test_open_position_keeps_dynamic_target_and_hold_time_after_edit(self):
-        config = PaperConfig(require_toward_strike=False, max_hold_seconds=30,
+        config = baseline_config(require_toward_strike=False, max_hold_seconds=30,
                              max_entry_price=.55, min_exit_price=.60,
                              dynamic_exit_min=.65, dynamic_exit_max=.75)
         engine, _ = warm(PaperEngine(config))
@@ -244,7 +246,7 @@ class PaperSettingsTests(unittest.TestCase):
         self.assertEqual(event["reason"], "max_hold")
 
     def test_paused_warmup_is_retained_when_entries_resume(self):
-        engine, events = warm(PaperEngine(PaperConfig(require_toward_strike=False, entries_enabled=False)))
+        engine, events = warm(PaperEngine(baseline_config(require_toward_strike=False, entries_enabled=False)))
         self.assertEqual(events, [])
         sample_count, cash = len(engine.samples), engine.cash
         engine.set_config(replace(engine.config, entries_enabled=True))
@@ -255,12 +257,12 @@ class PaperSettingsTests(unittest.TestCase):
         self.assertEqual(event["rules"], asdict(engine.config))
 
     def test_config_revision_changes_only_for_changed_settings_and_survives_restore(self):
-        engine = PaperEngine()
+        engine = PaperEngine(baseline_config())
         engine.set_config(engine.config)
         self.assertEqual(engine.config_revision, 0)
         engine.set_config(replace(engine.config, contracts=7))
         self.assertEqual(engine.config_revision, 1)
-        restored = PaperEngine(PaperConfig(contracts=2), state=engine.dump_state())
+        restored = PaperEngine(baseline_config(contracts=2), state=engine.dump_state())
         self.assertEqual(restored.config.contracts, 7)
         self.assertEqual(restored.config_revision, 1)
         view = restored.snapshot()
@@ -274,7 +276,7 @@ class TowardStrikeTests(unittest.TestCase):
     def test_verified_strike_allows_up_from_below_and_down_from_above(self):
         for direction, strike, side in ((1, 65200, "up"), (-1, 64800, "down")):
             with self.subTest(direction=direction):
-                engine, events = warm(PaperEngine(), direction=direction,
+                engine, events = warm(PaperEngine(baseline_config()), direction=direction,
                                       strike_price=strike, strike_source="kalshi.floor_strike")
                 self.assertEqual(events[0]["side"], side)
                 self.assertTrue(engine.position["rules"]["require_toward_strike"])
@@ -287,7 +289,7 @@ class TowardStrikeTests(unittest.TestCase):
                  {"strike_price": True, "strike_source": "kalshi.floor_strike"})
         for values in cases:
             with self.subTest(values=values):
-                engine, events = warm(PaperEngine(), **values)
+                engine, events = warm(PaperEngine(baseline_config()), **values)
                 self.assertEqual(events, [])
                 self.assertEqual(engine.snapshot()["message"], "Waiting for verified Kalshi strike price.")
 
@@ -295,12 +297,12 @@ class TowardStrikeTests(unittest.TestCase):
         for direction, strike in ((1, 64900), (-1, 65100), (1, 65080), (-1, 64920),
                                  (1, 65060), (-1, 64940)):
             with self.subTest(direction=direction, strike=strike):
-                _, events = warm(PaperEngine(), direction=direction,
+                _, events = warm(PaperEngine(baseline_config()), direction=direction,
                                  strike_price=strike, strike_source="kalshi.floor_strike")
                 self.assertEqual(events, [])
 
     def test_filter_can_be_disabled_without_an_official_strike(self):
-        _, events = warm(PaperEngine(PaperConfig(require_toward_strike=False)))
+        _, events = warm(PaperEngine(baseline_config(require_toward_strike=False)))
         self.assertEqual(len(events), 1)
 
 
@@ -437,7 +439,7 @@ class PaperExitTests(unittest.TestCase):
 
 class PaperPersistenceTests(unittest.TestCase):
     def test_restore_preserves_new_profit_bounds_and_entry_time_rules(self):
-        config = PaperConfig(require_toward_strike=False, max_entry_price=.55, min_exit_price=.60,
+        config = baseline_config(require_toward_strike=False, max_entry_price=.55, min_exit_price=.60,
                              dynamic_exit_enabled=False, max_hold_seconds=30)
         engine, _ = warm(PaperEngine(config))
         engine.set_config(replace(config, min_exit_price=.85, max_hold_seconds=3600))
@@ -459,7 +461,7 @@ class PaperPersistenceTests(unittest.TestCase):
         for event in state["events"]:
             event.pop("rules", None)
             event.pop("config_revision", None)
-        config = PaperConfig(stop_loss=.30, max_hold_seconds=3600, cooldown_seconds=300,
+        config = baseline_config(stop_loss=.30, max_hold_seconds=3600, cooldown_seconds=300,
                              max_entry_price=.55, min_exit_price=.60, dynamic_exit_enabled=False)
         restored = PaperEngine(config, state=state)
         self.assertEqual(restored.config, config)
@@ -528,7 +530,7 @@ class PaperPersistenceTests(unittest.TestCase):
         self.assertEqual(engine.events[0]["side"], "up")
 
     def test_history_is_bounded(self):
-        engine = PaperEngine()
+        engine = PaperEngine(baseline_config())
         position = {"ticker": TICKER, "side": "up"}
         for n in range(100):
             engine._emit("exit", position, .5, 1, -.1, "synthetic", EPOCH + n)

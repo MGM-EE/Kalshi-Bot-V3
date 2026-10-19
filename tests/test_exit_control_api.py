@@ -12,6 +12,9 @@ from unittest.mock import patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from tests.paper_fixtures import baseline_config
+from feedboard.paper import ENTRY_FILTER_FIELDS
+
 from feedboard.paper import PaperConfig, PaperEngine
 from feedboard.paper_runtime import PaperJournal
 from feedboard.web import JOURNAL, STORE, create_app
@@ -30,7 +33,7 @@ def iso(value):
 
 def seeded_state():
     """A genuine synthetic entry, with the position aged enough for risk checks."""
-    engine = PaperEngine()
+    engine = PaperEngine(baseline_config())
     epoch = time.time() - 260
     for second in range(21):
         mid = 65000 + second * 4
@@ -153,7 +156,7 @@ class ExitControlApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_nineteen_field_rules_can_apply_hold_and_restart_preserving_history(self):
         legacy = seeded_state()
         for rules in (legacy["config"], legacy["position"]["rules"], legacy["events"][0]["rules"]):
-            for key in (*DEFAULT_CONTROLS, "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent"):
+            for key in (*DEFAULT_CONTROLS, "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", *ENTRY_FILTER_FIELDS):
                 del rules[key]
             self.assertEqual(len(rules), 19)
         original = copy.deepcopy(legacy)
@@ -216,7 +219,7 @@ class ExitControlApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse((await self.document(client))["settings"]["hold_to_settlement"])
 
     async def test_closed_trade_identity_conflicts_instead_of_setting_future_defaults(self):
-        closed = PaperEngine().dump_state()
+        closed = PaperEngine(baseline_config()).dump_state()
         client, _ = await self.client_for(state=closed)
         before = PaperJournal(self.path).load()
         response = await self.save(client, {"hold_to_settlement": True},

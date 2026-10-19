@@ -99,6 +99,24 @@
                 <span class="settings-help" id="settings-floor-band-preview">0.10 means 0.10%. New entries only; exits are unchanged.</span>
               </div>
               <p class="settings-exit-note" id="settings-exit-note">Minimum sale is for profit-taking. Risk exits can sell lower.</p>
+              <details class="advanced-settings"><summary>Entry timing &amp; quality</summary>
+                <div class="settings-toggles">
+                  <label class="setting-check" for="setting-entry-window"><input id="setting-entry-window" name="entry_window_enabled" type="checkbox" checked><span>Limit entry minutes <small>Start included; end excluded. Measured within each 15-minute round.</small></span></label>
+                </div>
+                <div class="settings-grid">
+                  <label class="setting-field" for="setting-entry-start"><span>Start at <small>minute</small></span><input id="setting-entry-start" name="entry_start_minute" type="number" min="0" max="15" step="0.1" inputmode="decimal" required value="5"></label>
+                  <label class="setting-field" for="setting-entry-end"><span>Stop at <small>minute</small></span><input id="setting-entry-end" name="entry_end_minute" type="number" min="0" max="15" step="0.1" inputmode="decimal" required value="13"></label>
+                </div>
+                <div class="settings-toggles">
+                  <label class="setting-check" for="setting-confirmation"><input id="setting-confirmation" name="confirmation_enabled" type="checkbox" checked><span>Confirm the setup <small>All entry checks must persist with fresh BTC and book updates.</small></span></label>
+                  <label class="setting-check" for="setting-choppiness"><input id="setting-choppiness" name="choppiness_enabled" type="checkbox" checked><span>Avoid choppy entries <small>Requires 60 seconds of fresh BTC history. Higher efficiency means a straighter price path.</small></span></label>
+                </div>
+                <div class="settings-grid">
+                  <label class="setting-field" for="setting-confirm-seconds"><span>Confirmation <small>seconds</small></span><input id="setting-confirm-seconds" name="confirmation_seconds" type="number" min="0.1" max="30" step="0.1" inputmode="decimal" required value="2"></label>
+                  <label class="setting-field" for="setting-efficiency"><span>Minimum efficiency <small>%</small></span><input id="setting-efficiency" name="min_trend_efficiency_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" required value="35"></label>
+                </div>
+                <p class="settings-help">Defaults are experimental. These filters affect new buys; exit protections stay active. At least 90 seconds remaining is always required.</p>
+              </details>
               <details class="advanced-settings"><summary>Risk &amp; entry filters</summary><div class="settings-grid">
                 <label class="setting-field" for="setting-stop-loss"><span>Stop loss <small>¢ below entry</small></span><input id="setting-stop-loss" name="stop_loss_cents" type="number" min="0.1" max="95" step="0.1" inputmode="decimal" required value="12"></label>
                 <label class="setting-field" for="setting-max-spread"><span>Maximum spread <small>¢</small></span><input id="setting-max-spread" name="max_spread_cents" type="number" min="0" max="20" step="0.1" inputmode="decimal" required value="4"></label>
