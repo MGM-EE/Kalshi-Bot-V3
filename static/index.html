@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101412">
+    <title>Pulse · Kalshi + Kraken</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Pulse home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>pulse<span class="brand-detail">MARKET MONITOR</span></a>
+        <div class="session-state" role="status"><span class="status-dot" id="session-dot"></span><span id="session-label">Connecting</span></div>
+      </header>
+
+      <main>
+        <div class="page-heading">
+          <div><div class="eyebrow">THE LIVE DESK</div><h1>A clear view of the market.</h1><p class="intro">Bitcoin on Kraken. Prediction markets on Kalshi. Just the essentials.</p></div>
+          <span class="read-only"><svg aria-hidden="true" viewBox="0 0 16 16" width="13" height="13"><path d="M3 13 13 3M4 3h9v9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg> PUBLIC DATA · READ ONLY</span>
+        </div>
+
+        <div class="feed-grid">
+          <section class="panel kraken-panel" aria-labelledby="kraken-heading">
+            <div class="panel-heading"><div class="source-heading"><span class="source-icon kraken-icon" aria-hidden="true">K</span><div><h2 id="kraken-heading">Kraken</h2><p>Spot market</p></div></div><span class="feed-status" id="kraken-status" data-state="connecting"><span class="status-dot"></span><span>Connecting</span></span></div>
+            <div class="quote-heading"><span class="asset-symbol" id="kraken-symbol">BTC / USD</span><span class="quote-label">LAST TRADE</span></div>
+            <div class="main-price" id="kraken-last">—<span class="currency"> USD</span></div>
+            <div class="chart-area"><svg id="price-chart" viewBox="0 0 600 132" preserveAspectRatio="none" role="img" aria-label="Bitcoin prices received during this session"><defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#9fdbb3" stop-opacity="0.13"/><stop offset="100%" stop-color="#9fdbb3" stop-opacity="0"/></linearGradient></defs><path id="chart-area-path" fill="url(#chart-fill)"></path><path id="chart-line" fill="none" stroke="#a2dbb5" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"></path></svg><span id="chart-empty">Waiting for live prices</span></div>
+            <div class="chart-caption"><span>THIS SESSION</span><span id="chart-samples">0 observations</span></div>
+            <div class="quote-stats"><div><span class="stat-label">Bid</span><strong id="kraken-bid">—</strong></div><div><span class="stat-label">Ask</span><strong id="kraken-ask">—</strong></div><div><span class="stat-label">Spread</span><strong id="kraken-spread">—</strong></div></div>
+            <div class="feed-error" id="kraken-error" hidden></div>
+            <div class="panel-footer"><span id="kraken-transport">Awaiting feed</span><span>Updated <span id="kraken-age">—</span></span></div>
+          </section>
+
+          <section class="panel kalshi-panel" aria-labelledby="kalshi-heading">
+            <div class="panel-heading"><div class="source-heading"><span class="source-icon kalshi-icon" aria-hidden="true">K</span><div><h2 id="kalshi-heading">Kalshi</h2><p>Prediction markets</p></div></div><span class="feed-status" id="kalshi-status" data-state="connecting"><span class="status-dot"></span><span>Connecting</span></span></div>
+            <div class="contracts-heading"><div><span class="asset-symbol">Bitcoin</span><p id="kalshi-series">KXBTC15M · 15-minute markets</p></div><span class="contract-count" id="contract-count">0 contracts</span></div>
+            <div class="market-table-wrap"><table class="market-table"><thead><tr><th scope="col">CONTRACT</th><th scope="col">YES BID</th><th scope="col">YES ASK</th><th scope="col">LAST</th></tr></thead><tbody id="markets"></tbody></table><div class="markets-empty" id="markets-empty"><svg class="empty-icon" aria-hidden="true" viewBox="0 0 24 24" width="24" height="24"><path d="M5 19 19 5M6 5h13v13" fill="none" stroke="currentColor" stroke-width="1.2"/></svg><p>Waiting for market data</p><span>Contracts appear when the feed connects.</span></div></div>
+            <div class="market-note"><span class="note-dot" aria-hidden="true"></span>Prices show the cost of a Yes contract, in cents.</div>
+            <div class="feed-error" id="kalshi-error" hidden></div>
+            <div class="panel-footer"><span id="kalshi-transport">Awaiting feed</span><span>Updated <span id="kalshi-age">—</span></span></div>
+          </section>
+        </div>
+
+        <div class="system-bar"><div class="system-item"><span class="system-dot" aria-hidden="true"></span><span id="system-state">Establishing connection</span></div><div class="system-details"><span>Event loop <strong id="loop-lag">—</strong></span><span>Feed updates <strong id="update-count">0</strong></span><span class="clock" id="clock">— ET</span></div></div>
+      </main>
+      <footer class="page-footer"><span>Built for a quieter signal.</span><span>Kalshi + Kraken <span class="footer-separator">/</span> Live public feeds</span></footer>
+    </div>
+  </body>
+</html>
