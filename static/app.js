@@ -440,6 +440,89 @@
     el["conditions-empty"].hidden = keys.size > 0;
   }
 
+  function renderSettlementOutlook() {
+    const outlook = snapshot?.settlement_outlook;
+    const panel = el["outlook-panel"];
+    panel.hidden = !snapshot?.paper?.enabled || outlook?.enabled !== true;
+    if (panel.hidden) return;
+    const statuses = ["warming_up", "live", "stale", "unavailable", "awaiting_settlement", "settled"];
+    let status = statuses.includes(outlook.status) ? outlook.status : "unavailable";
+    const connected = connectionState === "live";
+    const serverTime = Date.parse(snapshot.server_time);
+    const sinceReceipt = Math.max(0, performance.now() - snapshotReceivedAt);
+    const now = numeric(serverTime) ? serverTime + sinceReceipt : NaN;
+    const checkedAt = numeric(outlook.updated_at) ? outlook.updated_at * 1000 : NaN;
+    const atReceipt = serverTime - checkedAt;
+    const fresh = connected && numeric(atReceipt) && atReceipt >= -3000 && sinceReceipt <= 3000 && Math.max(0, atReceipt) + sinceReceipt <= 3000;
+    const close = typeof outlook.close_time === "string" ? Date.parse(outlook.close_time) : NaN;
+    const open = typeof outlook.open_time === "string" ? Date.parse(outlook.open_time) : NaN;
+    const limit = value => Math.min(900, Math.max(0, value));
+    let remaining = numeric(close) && numeric(now) ? (close - now) / 1000 : numeric(outlook.remaining_seconds) ? outlook.remaining_seconds - sinceReceipt / 1000 : null;
+    let elapsed = numeric(open) && numeric(now) ? (now - open) / 1000 : numeric(remaining) ? 900 - remaining : numeric(outlook.elapsed_seconds) ? outlook.elapsed_seconds + sinceReceipt / 1000 : null;
+    const closed = numeric(remaining) && remaining <= 0;
+    if (status !== "settled" && (closed || status === "awaiting_settlement")) status = "awaiting_settlement";
+    else if (status !== "settled" && (!connected || status === "live" && (!fresh || numeric(open) && numeric(now) && now < open))) status = "stale";
+    const validPercentages = Number.isInteger(outlook.up_percent) && Number.isInteger(outlook.down_percent) && outlook.up_percent >= 0 && outlook.up_percent <= 100 && outlook.down_percent === 100 - outlook.up_percent;
+    const official = status === "settled" && validPercentages && [0, 100].includes(outlook.up_percent);
+    const live = status === "live" && fresh && validPercentages && outlook.up_percent > 0 && outlook.up_percent < 100 && numeric(remaining) && remaining > 0;
+    if (status === "settled" && !official || status === "live" && !live) status = "unavailable";
+    const current = official || live;
+    const favored = current ? outlook.up_percent > 50 ? "up" : outlook.up_percent < 50 ? "down" : null : null;
+    panel.dataset.status = status;
+    setText(el["outlook-up"], current ? `${outlook.up_percent}%` : "—");
+    setText(el["outlook-down"], current ? `${outlook.down_percent}%` : "—");
+    el["outlook-up"].parentElement.dataset.favored = String(favored === "up");
+    el["outlook-down"].parentElement.dataset.favored = String(favored === "down");
+    setText(el["outlook-favored"], official ? `Official ${favored === "up" ? "Up" : "Down"}` : live ? favored ? `${favored === "up" ? "Up" : "Down"} favored` : "Even estimate" : "Estimate unavailable");
+    const labels = { warming_up: "Collecting live data", live: "Live estimate", stale: "Waiting for fresh data", unavailable: "Estimate unavailable", awaiting_settlement: "Awaiting official settlement", settled: connected ? "Official result" : "Official result · cached" };
+    setText(el["outlook-status"], labels[status]);
+    let message = typeof outlook.message === "string" && outlook.message ? outlook.message : "Waiting for a verified floor and live BTC prices.";
+    if (status === "awaiting_settlement") message = "Trading window closed. Waiting for Kalshi’s official result; spot prices do not determine the displayed result.";
+    else if (!connected && !official) message = "Connection interrupted. Current estimates are hidden until fresh data arrives.";
+    else if (status === "stale") message = "Estimate is stale. Current percentages will return with fresh live data.";
+    else if (status === "unavailable" && outlook.status === "live") message = "A complete live estimate is unavailable. Waiting for current data.";
+    setText(el["outlook-message"], message);
+    const safeRemaining = numeric(remaining) ? limit(remaining) : null;
+    const safeElapsed = official || closed ? 900 : numeric(elapsed) ? limit(elapsed) : null;
+    const seconds = safeRemaining === null ? null : Math.ceil(safeRemaining);
+    setText(el["outlook-countdown"], official ? "Settled" : seconds === null ? "—" : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+    setText(el["outlook-time-label"], official ? "Official result received" : closed ? "15-minute window complete" : "remaining of 15:00");
+    const progress = safeElapsed === null ? 0 : safeElapsed;
+    el["outlook-progress-fill"].style.width = `${(progress / 9).toFixed(2)}%`;
+    el["outlook-progress"].setAttribute("aria-valuenow", String(Math.round(progress)));
+    el["outlook-progress"].setAttribute("aria-valuetext", safeElapsed === null ? "Contract timing unavailable" : `${Math.floor(progress / 60)} minutes ${Math.floor(progress % 60)} seconds elapsed of 15 minutes`);
+    const ticker = typeof outlook.ticker === "string" ? outlook.ticker : "Current contract";
+    panel.title = `${ticker}${numeric(close) ? ` · closes ${closeClock.format(close)} ET` : ""}${numeric(outlook.strike_price) && outlook.strike_price > 0 ? ` · floor ${money(outlook.strike_price)}` : ""}`;
+    setText(el["outlook-contract"], panel.title);
+    // Only render observations supplied by the server. Do not backfill a late
+    // join, bridge a stale interval, or invent a current point after the close.
+    const observations = Array.isArray(outlook.history) ? outlook.history.slice(-181) : [];
+    let previous = null;
+    let line = "";
+    let point = null;
+    let count = 0;
+    for (const sample of observations) {
+      if (!sample || !numeric(sample.elapsed_seconds) || sample.elapsed_seconds < 0 || sample.elapsed_seconds > 900 || !numeric(sample.up_percent) || sample.up_percent < 0 || sample.up_percent > 100 || !official && [0, 100].includes(sample.up_percent) || previous !== null && sample.elapsed_seconds <= previous) continue;
+      const x = (sample.elapsed_seconds / 900 * 556).toFixed(2);
+      const y = (52 - sample.up_percent / 100 * 52).toFixed(2);
+      line += `${previous === null || sample.elapsed_seconds - previous > 10.5 ? "M" : " L"}${x},${y} `;
+      previous = sample.elapsed_seconds;
+      point = { x, y };
+      count += 1;
+    }
+    if (el["outlook-history-line"].getAttribute("d") !== line) el["outlook-history-line"].setAttribute("d", line);
+    if (point) el["outlook-history-point"].removeAttribute("hidden");
+    else el["outlook-history-point"].setAttribute("hidden", "");
+    if (point) {
+      el["outlook-history-point"].setAttribute("cx", point.x);
+      el["outlook-history-point"].setAttribute("cy", point.y);
+    }
+    el["outlook-chart"].dataset.historical = String(!live);
+    setText(el["outlook-chart-label"], live ? "Up estimate · this contract" : "Up estimates · historical observations");
+    setText(el["outlook-chart-state"], count ? `${count} observation${count === 1 ? "" : "s"} · Down = 100 − Up` : "Waiting for observations");
+    el["outlook-history"].setAttribute("aria-label", `${ticker}: historical Up estimates over minutes 0 to 15. Down equals 100 percent minus Up. ${count} observations; missing intervals are not joined.`);
+  }
+
   function feedAge(feed) {
     if (numeric(feed?.age_ms)) return Math.max(0, feed.age_ms + performance.now() - snapshotReceivedAt);
     const timestamp = Date.parse(feed?.received_at);
@@ -577,6 +660,7 @@
     setText(el["system-state"], connected ? "Live connection · automatic updates" : connectionState === "retrying" ? "Connection interrupted · retrying" : "Establishing connection");
     if (!snapshot) return;
     renderPaper();
+    renderSettlementOutlook();
     renderConditions();
     renderFeed("kraken", feeds.kraken);
     renderFeed("kalshi", feeds.kalshi);

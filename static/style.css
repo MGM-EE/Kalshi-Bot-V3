@@ -240,6 +240,188 @@ h1 {
   0%,20% { background:#4b2b2a; border-color:#ee9a94; }
   100% { background:var(--panel); border-color:var(--line); }
 }
+.outlook-panel {
+  margin:-7px 0 20px;
+  padding:18px 24px 14px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:var(--panel);
+}
+.outlook-heading,.outlook-readout,.outlook-estimates,.outlook-chart-heading,.outlook-footer {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.outlook-heading h2 {
+  margin:0;
+  font-size:11px;
+  font-weight:500;
+}
+.outlook-heading>span,.outlook-chart-heading,.outlook-footer,.outlook-message {
+  color:var(--muted);
+  font-size:9px;
+  line-height:1.6;
+}
+.outlook-heading>span {
+  text-align:right;
+}
+.outlook-panel[data-status=live] .outlook-heading>span {
+  color:var(--green);
+}
+.outlook-panel[data-status=awaiting_settlement] .outlook-heading>span {
+  color:var(--amber);
+}
+.outlook-readout {
+  margin:15px 0 12px;
+}
+.outlook-estimates {
+  justify-content:flex-start;
+  gap:17px;
+  min-width:0;
+}
+.outlook-estimates>div {
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.outlook-estimates>div>span,.outlook-versus {
+  color:var(--muted);
+  font-size:10px;
+}
+.outlook-estimates strong {
+  font-size:24px;
+  font-weight:500;
+  letter-spacing:-.7px;
+  font-variant-numeric:tabular-nums;
+}
+.outlook-estimates>div[data-favored=true] strong {
+  color:var(--green);
+}
+.outlook-favored {
+  margin-left:8px;
+  color:#b9c5ba;
+  font-size:10px;
+  line-height:1.5;
+}
+.outlook-timing {
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  text-align:right;
+  flex:none;
+}
+.outlook-timing strong {
+  font-size:17px;
+  font-weight:450;
+  font-variant-numeric:tabular-nums;
+}
+.outlook-timing>span {
+  color:var(--muted);
+  font-size:9px;
+}
+.outlook-progress {
+  height:3px;
+  border-radius:2px;
+  background:var(--line);
+  overflow:hidden;
+}
+.outlook-progress>span {
+  display:block;
+  width:0;
+  height:100%;
+  background:#748b7b;
+}
+.outlook-message {
+  margin:9px 0 4px;
+  overflow-wrap:anywhere;
+}
+.outlook-contract {
+  margin:0 0 12px;
+  color:var(--muted);
+  font-size:9px;
+  line-height:1.6;
+  overflow-wrap:anywhere;
+}
+.outlook-chart {
+  border-top:1px solid var(--line);
+  padding-top:9px;
+}
+.outlook-chart-heading {
+  margin-bottom:3px;
+}
+.outlook-chart-heading>span:last-child {
+  text-align:right;
+}
+.outlook-chart svg {
+  display:block;
+  width:100%;
+  height:52px;
+  overflow:visible;
+}
+.outlook-plot {
+  position:relative;
+  padding:10px 0 0 32px;
+}
+.outlook-y-labels,.outlook-x-labels {
+  color:var(--muted);
+  font-size:8px;
+  line-height:12px;
+  display:flex;
+  justify-content:space-between;
+}
+.outlook-y-labels {
+  position:absolute;
+  left:0;
+  top:4px;
+  width:25px;
+  height:64px;
+  flex-direction:column;
+  text-align:right;
+}
+.outlook-x-labels {
+  margin-top:10px;
+  padding-bottom:3px;
+}
+.outlook-grid,.outlook-ticks {
+  stroke:var(--line);
+  fill:none;
+  stroke-width:1;
+  vector-effect:non-scaling-stroke;
+}
+.outlook-grid {
+  stroke-dasharray:3 4;
+}
+#outlook-history-line {
+  stroke:var(--green);
+  stroke-width:1.6;
+}
+#outlook-history-point {
+  fill:var(--green);
+}
+.outlook-chart[data-historical=true] #outlook-history-line,
+.outlook-chart[data-historical=true] #outlook-history-point {
+  opacity:.4;
+}
+.outlook-footer {
+  align-items:flex-start;
+  margin-top:6px;
+}
+.outlook-footer>p {
+  margin:0;
+}
+.outlook-about {
+  max-width:55%;
+}
+.outlook-about>summary {
+  cursor:pointer;
+  text-align:right;
+  white-space:nowrap;
+}
+.outlook-about>p {
+  margin:8px 0 0;
+  line-height:1.7;
+}
 .conditions-panel {
   margin:-7px 0 20px;
   padding:18px 24px;
@@ -1072,6 +1254,32 @@ a:focus-visible {
     flex-direction:row;
     align-items:center;
     gap:12px;
+  }
+  .outlook-panel {
+    padding:17px 19px 13px;
+  }
+  .outlook-estimates {
+    flex-wrap:wrap;
+    gap:10px 13px;
+  }
+  .outlook-favored {
+    width:100%;
+    margin-left:0;
+  }
+  .outlook-chart-heading {
+    gap:8px;
+    font-size:8px;
+  }
+  .outlook-footer {
+    flex-wrap:wrap;
+    gap:5px;
+  }
+  .outlook-about {
+    max-width:100%;
+    width:100%;
+  }
+  .outlook-about>summary {
+    text-align:left;
   }
   .conditions-panel {
     padding:17px 19px;

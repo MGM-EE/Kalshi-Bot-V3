@@ -18,6 +18,7 @@ from urllib.parse import quote
 import aiohttp
 
 from .marketdata import TradeFlow, normalize_orderbook
+from .outlook import SettlementOutlook
 from .reference import normalize_reference
 
 LOG = logging.getLogger(__name__)
@@ -196,6 +197,7 @@ class Store:
         self.paper_engine = None
         self.paper_control = None
         self.trade_flow = TradeFlow()
+        self.settlement_outlook = SettlementOutlook()
         self.paper = {"enabled": False, "mode": "paper", "status": "paused",
                       "message": "Paper trading is disabled"}
 
@@ -216,6 +218,9 @@ class Store:
         feed.updates += 1
         feed.status = "live"
         feed.error = None
+        if name == "kraken" and self.settings.paper_enabled:
+            self.settlement_outlook.observe(data, now=feed.received_mono, wall_time=time.time(),
+                                            transport=transport, symbol=self.settings.symbol)
         self.revision += 1
 
     def fail(self, name: str, error: Exception):
@@ -246,6 +251,10 @@ class Store:
         return {"started_at": self.started_at, "server_time": utc_now(), "mode": "live",
                 "feeds": feeds, "paper": self.paper,
                 "reference": {key: self.book.get(key) for key in ("ticker", "strike_price", "strike_source")},
+                "settlement_outlook": self.settlement_outlook.snapshot(
+                    self.book_snapshot(), feeds["kraken"], now=now, wall_time=time.time(),
+                    enabled=self.settings.paper_enabled and self.settings.series == "KXBTC15M"
+                    and self.settings.symbol == "BTC/USD"),
                 "metrics": {"clients": self.clients, "loop_lag_ms": round(p95, 2)}}
 
     def ready(self) -> bool:

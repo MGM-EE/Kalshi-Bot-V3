@@ -55,6 +55,14 @@ The strike comes from Kalshi's official numeric `floor_strike` for supported bin
 
 To limit entry distance, enable **Limit entry distance from floor**, set **Maximum below %** and **Maximum above %**, and save. Here the floor is the BTC strike price, not the contract's cents per share. `0.10` means **0.10%**. With an $80,000 floor, 0.20% below and 0.10% above allow BTC midpoints from **$79,840 through $80,080**, inclusive. The live preview shows the range for the current floor. This saved filter applies only to new entries, alongside all other enabled entry conditions; it does not change exits or an open trade's rules.
 
+## Settlement outlook
+
+The **Settlement outlook** panel below the Paper strip shows experimental **Up / Down percentages**, time remaining, progress through the 15-minute contract, and the observed Up-estimate history. Down is the complement of Up. The panel follows the same selected or held Kalshi contract as the verified floor; it does not mix a new contract's floor with an older position.
+
+The model compares Kraken's live BTC midpoint with Kalshi's verified floor, using observed volatility, a bounded short-term momentum adjustment, and time remaining. It needs at least **60 seconds of real WebSocket observations** before displaying percentages. It retains uncertainty for differences between Kraken spot and Kalshi's BRTI settlement average. Live estimates are capped at **5–95%**; only an official Kalshi result can show **0% / 100%**. These are uncalibrated model estimates, not measured accuracy or a demonstrated trading edge.
+
+Missing reference data, stale feeds, and REST fallback hide the current percentages. At close, the panel waits for the official result rather than guessing from spot. The history starts when valid estimates become available, leaves gaps for missing observations, and resets for a different contract or revised floor. It is bounded session history held in memory; restarting clears it. This display adds no exchange requests, changes no entry/exit rules, and writes nothing to the paper journal.
+
 ## Paper rules
 
 The UI adds one compact strip showing the holding, target, net P&L, and latest action. New buys flash green with **Up** or **Down**; exits flash green for a nonnegative net result or red for a loss. Historical events do not replay on reload. Reduced-motion preferences disable animation while retaining the outcome color.

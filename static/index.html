@@ -27,6 +27,30 @@
           <div class="paper-result"><div class="paper-target" id="paper-target" hidden></div><div class="paper-pnl"><span>Net P&amp;L</span><strong id="paper-pnl">—</strong></div></div>
         </section>
 
+        <section class="outlook-panel" id="outlook-panel" aria-labelledby="outlook-heading" data-status="warming_up" hidden>
+          <div class="outlook-heading"><h2 id="outlook-heading">Settlement outlook</h2><span id="outlook-status">Collecting live data</span></div>
+          <div class="outlook-readout">
+            <div class="outlook-estimates"><div><span>Up</span><strong id="outlook-up">—</strong></div><span class="outlook-versus" aria-hidden="true">/</span><div><span>Down</span><strong id="outlook-down">—</strong></div><span class="outlook-favored" id="outlook-favored">Estimate unavailable</span></div>
+            <div class="outlook-timing"><strong id="outlook-countdown">—</strong><span id="outlook-time-label">remaining of 15:00</span></div>
+          </div>
+          <div class="outlook-progress" id="outlook-progress" role="progressbar" aria-label="Time elapsed in the 15-minute contract" aria-valuemin="0" aria-valuemax="900" aria-valuenow="0"><span id="outlook-progress-fill"></span></div>
+          <p class="outlook-message" id="outlook-message">Waiting for a verified floor and live BTC prices.</p>
+          <p class="outlook-contract" id="outlook-contract">Waiting for a contract</p>
+          <div class="outlook-chart" id="outlook-chart" data-historical="true">
+            <div class="outlook-chart-heading"><span id="outlook-chart-label">Up estimate · this contract</span><span id="outlook-chart-state">Waiting for observations</span></div>
+            <div class="outlook-plot"><div class="outlook-y-labels" aria-hidden="true"><span>100%</span><span>50%</span><span>0%</span></div>
+              <svg id="outlook-history" viewBox="0 0 556 52" preserveAspectRatio="none" role="img" aria-label="Up settlement estimate over the 15-minute contract; Down is 100 percent minus Up">
+                <path class="outlook-grid" d="M0,0 H556 M0,26 H556 M0,52 H556"></path>
+                <path class="outlook-ticks" d="M0,0 V55 M185.33,52 V55 M370.67,52 V55 M556,0 V55"></path>
+                <path id="outlook-history-line" d="" fill="none" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"></path>
+                <circle id="outlook-history-point" r="2.5" hidden></circle>
+              </svg>
+              <div class="outlook-x-labels" aria-hidden="true"><span>0 min</span><span>5 min</span><span>10 min</span><span>15 min</span></div>
+            </div>
+          </div>
+          <div class="outlook-footer"><p>Experimental estimate · does not place trades.</p><details class="outlook-about"><summary>About estimate</summary><p>Uses live Kraken BTC prices, recent volatility, momentum and time remaining relative to Kalshi’s verified floor. This model is uncalibrated; the percentages are estimates, not measured accuracy. Kalshi settles using its BRTI reference average, which can differ from Kraken spot. This is not a buy or sell recommendation. The chart starts when observations become available; gaps indicate missing estimates.</p></details></div>
+        </section>
+
         <section class="conditions-panel" id="conditions-panel" aria-labelledby="conditions-heading" data-stale="true" hidden>
           <div class="conditions-heading"><h2 id="conditions-heading">Entry conditions</h2><span class="conditions-legend">Red: not met · Yellow: building · Green: met</span></div>
           <p class="conditions-summary" id="conditions-summary">Waiting for current checks.</p>
