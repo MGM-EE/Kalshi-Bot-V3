@@ -24,7 +24,7 @@
   let activePaperEvent = null;
   let paperEventTimer = null;
   const exitControlNames = ["hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal", "exit_on_max_hold", "exit_before_expiry"];
-  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent", ...exitControlNames];
+  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent", "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", ...exitControlNames];
   const settingInputs = Object.fromEntries(settingNames.map(name => [name, el["settings-form"].elements.namedItem(name)]));
   const settingsState = { loaded: false, attempted: false, available: false, busy: false, saving: false, revision: null, saved: null, conflict: false, applyPosition: null };
 
@@ -87,6 +87,11 @@
     el["dynamic-range"].setAttribute("aria-disabled", String(!dynamic));
     settingInputs.dynamic_min_cents.disabled = !dynamic;
     settingInputs.dynamic_max_cents.disabled = !dynamic;
+    const band = settingInputs.floor_distance_enabled.checked;
+    el["floor-band-range"].setAttribute("aria-disabled", String(!band));
+    settingInputs.max_above_floor_percent.disabled = !band;
+    settingInputs.max_below_floor_percent.disabled = !band;
+    renderFloorBandPreview();
     const hold = settingInputs.hold_to_settlement.checked;
     for (const name of exitControlNames.slice(1)) settingInputs[name].disabled = hold;
     el["settings-early-exits"].setAttribute("aria-disabled", String(hold));
@@ -96,6 +101,23 @@
     el["settings-save"].disabled = settingsState.busy || !settingsState.loaded || !settingsState.available || settingsState.conflict || !settingsDirty() && !applyingExitControls();
     setText(el["settings-save"], settingsState.saving ? "Saving…" : "Save settings");
     el["settings-reload"].disabled = settingsState.busy;
+  }
+
+  function renderFloorBandPreview() {
+    let text = "0.10 means 0.10%. New entries only; exits are unchanged.";
+    if (settingInputs.floor_distance_enabled.checked) {
+      const reference = snapshot?.reference;
+      const below = settingInputs.max_below_floor_percent.valueAsNumber;
+      const above = settingInputs.max_above_floor_percent.valueAsNumber;
+      if (!numeric(reference?.strike_price) || reference.strike_price <= 0 || reference.strike_source !== "kalshi.floor_strike") {
+        text = "Waiting for a verified Kalshi floor. Entries wait while this filter is enabled.";
+      } else if (numeric(below) && numeric(above) && below >= 0 && above >= 0 && below <= 100 && above <= 100) {
+        text = `Preview: BTC ${money(reference.strike_price * (1 - below / 100))} – ${money(reference.strike_price * (1 + above / 100))}. Save to apply to new entries.`;
+      } else {
+        text = "Enter percentages from 0 to 100. Example: 0.10 means 0.10%.";
+      }
+    }
+    setText(el["settings-floor-band-preview"], text);
   }
 
   function clearSettingsErrors() {
@@ -496,6 +518,7 @@
     renderChart();
     const data = feeds.kalshi?.data || {};
     const reference = snapshot.reference || {};
+    renderFloorBandPreview();
     setText(el["settings-strike"], numeric(reference.strike_price) && reference.strike_source === "kalshi.floor_strike" ? `Strike ${money(reference.strike_price)} · trend uses Kraken spot; settlement uses Kalshi’s BRTI reference.` : "Strike unavailable · buys toward the strike wait for a reference.");
     const series = typeof data.series === "string" ? data.series : "KXBTC15M";
     setText(el["kalshi-series"], series === "KXBTC15M" ? `${series} · 15-minute markets` : series);

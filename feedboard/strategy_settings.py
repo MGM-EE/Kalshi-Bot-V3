@@ -20,6 +20,8 @@ _NUMBERS = {
     "cooldown_seconds": ("cooldown_seconds", 1, "Cooldown seconds", 0, 3600),
     "min_momentum_bps": ("min_momentum_bps", 1, "Minimum momentum", 0.01, 100),
     "min_flow_percent": ("flow_imbalance", 100, "Minimum aligned flow", 0, 100),
+    "max_above_floor_percent": ("max_above_floor_percent", 1, "Maximum above floor percent", 0, 100),
+    "max_below_floor_percent": ("max_below_floor_percent", 1, "Maximum below floor percent", 0, 100),
 }
 _BOOLEANS = {
     "dynamic_enabled": "dynamic_exit_enabled",
@@ -30,6 +32,7 @@ _BOOLEANS = {
     "exit_on_reversal": "exit_on_reversal",
     "exit_on_max_hold": "exit_on_max_hold",
     "exit_before_expiry": "exit_before_expiry",
+    "floor_distance_enabled": "floor_distance_enabled",
 }
 
 

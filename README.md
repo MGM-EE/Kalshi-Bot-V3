@@ -38,6 +38,7 @@ Open **Trade settings** beneath the paper strip. Set the boxes, then click **Sav
 | Dynamic sell range | 80–95¢ | Momentum, trade flow, and liquidity select a target within your saved bounds. |
 | Contracts | 5 | Whole contracts per entry, from 1 to 100. |
 | Only buy toward the strike | On | Up only while BTC is below the verified strike and rising; Down only while above and falling. |
+| Limit entry distance from floor | Off; 0.10% above / below | Optional maximum BTC distance above and below the verified floor, with independent limits. |
 | Allow new paper buys | On | Turning this off pauses new entries while existing-position exits continue. |
 | Hold to settlement | Off | Keep profit targets active, suppress all four early exits, and otherwise wait for the official result. |
 | Stop loss / momentum reversal / maximum hold / before expiry | On | Individually enable or disable each early-exit reason when Hold to settlement is off. |
@@ -50,7 +51,9 @@ To hold for an 80¢+ profit target or the final result, check **Hold to settleme
 
 If you already have an open trade, optionally check **Apply these exit controls to the open trade** before saving. This changes only the five exit switches on that exact position. Its profit prices, stop-loss distance, hold duration, size, and original entry record remain unchanged. Without this checkbox, only future entries receive the new switches. The panel shows the **actual open trade's exit policy**, separately from the editable settings. If the selected trade closes or changes before saving, the request is rejected instead of modifying a different trade. Uncheck the selection to save for future entries only, or explicitly select the new trade.
 
-The strike comes from Kalshi's official numeric `floor_strike` for supported binary Up/Down contracts. A missing or unverified strike blocks entries while the filter is on; there is no guessed opening price. The comparison uses Kraken's BTC midpoint as a spot proxy, while Kalshi settles using its BRTI benchmark averages. This directional filter does not estimate the contract's settlement probability. The current strike is shown inside the settings panel when available.
+The strike comes from Kalshi's official numeric `floor_strike` for supported binary Up/Down contracts. A missing or unverified strike blocks entries while either strike filter is on; there is no guessed opening price. The comparison uses Kraken's BTC midpoint as a spot proxy, while Kalshi settles using its BRTI benchmark averages. This directional filter does not estimate the contract's settlement probability. The current strike is shown inside the settings panel when available.
+
+To limit entry distance, enable **Limit entry distance from floor**, set **Maximum below %** and **Maximum above %**, and save. Here the floor is the BTC strike price, not the contract's cents per share. `0.10` means **0.10%**. With an $80,000 floor, 0.20% below and 0.10% above allow BTC midpoints from **$79,840 through $80,080**, inclusive. The live preview shows the range for the current floor. This saved filter applies only to new entries, alongside all other enabled entry conditions; it does not change exits or an open trade's rules.
 
 ## Paper rules
 

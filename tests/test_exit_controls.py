@@ -6,7 +6,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from feedboard.paper import EXIT_CONTROL_FIELDS, PaperConfig, PaperEngine, taker_fee
+from feedboard.paper import EXIT_CONTROL_FIELDS, FLOOR_BAND_FIELDS, PaperConfig, PaperEngine, taker_fee
 
 
 EPOCH = 1_800_000_000.
@@ -162,7 +162,7 @@ class ExitControlMigrationTests(unittest.TestCase):
     def legacy_state(self):
         state = opened().dump_state()
         for rules in (state["config"], state["position"]["rules"], state["events"][0]["rules"]):
-            for name in EXIT_CONTROL_FIELDS:
+            for name in (*EXIT_CONTROL_FIELDS, *FLOOR_BAND_FIELDS):
                 del rules[name]
         return state
 

@@ -18,6 +18,9 @@ EXIT_CONTROL_FIELDS = (
     "hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal",
     "exit_on_max_hold", "exit_before_expiry",
 )
+FLOOR_BAND_FIELDS = (
+    "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent",
+)
 
 
 def _exit_controls(config):
@@ -102,18 +105,22 @@ class PaperConfig:
     exit_on_reversal: bool = True
     exit_on_max_hold: bool = True
     exit_before_expiry: bool = True
+    floor_distance_enabled: bool = False
+    max_above_floor_percent: float = 0.10
+    max_below_floor_percent: float = 0.10
 
     def __post_init__(self):
         numeric = (self.initial_cash, self.warmup_seconds, self.cooldown_seconds,
                    self.max_hold_seconds, self.stop_loss, self.min_entry_price,
                    self.max_entry_price, self.min_exit_price, self.dynamic_exit_min,
                    self.dynamic_exit_max, self.max_spread, self.min_momentum_bps,
-                   self.flow_imbalance)
+                   self.flow_imbalance, self.max_above_floor_percent, self.max_below_floor_percent)
         if any(isinstance(v, bool) or not isinstance(v, (int, float)) or _num(v) is None
                for v in numeric):
             raise ValueError("paper configuration must be finite")
         if any(not isinstance(v, bool) for v in
                (self.dynamic_exit_enabled, self.require_toward_strike, self.entries_enabled,
+                self.floor_distance_enabled,
                 *(getattr(self, name) for name in EXIT_CONTROL_FIELDS))):
             raise ValueError("paper configuration toggles must be booleans")
         if (isinstance(self.contracts, bool) or not isinstance(self.contracts, int)
@@ -125,17 +132,20 @@ class PaperConfig:
                 or (self.dynamic_exit_enabled and self.min_exit_price > self.dynamic_exit_min)
                 or not 0 <= self.max_spread <= .20
                 or not .01 <= self.min_momentum_bps <= 100
-                or not 0 <= self.flow_imbalance <= 1):
+                or not 0 <= self.flow_imbalance <= 1
+                or not 0 <= self.max_above_floor_percent <= 100
+                or not 0 <= self.max_below_floor_percent <= 100):
             raise ValueError("invalid paper configuration")
         if self.series != "KXBTC15M" or self.symbol != "BTC/USD":
             raise ValueError("paper signals currently support KXBTC15M and BTC/USD only")
 
 
 def _saved_config(value):
-    """Accept complete current settings or the one complete pre-control schema."""
+    """Accept complete settings from each supported version, never a partial schema."""
     current = {field.name for field in fields(PaperConfig)}
-    legacy = current.difference(EXIT_CONTROL_FIELDS)
-    if not isinstance(value, dict) or set(value) not in (current, legacy):
+    pre_band = current.difference(FLOOR_BAND_FIELDS)
+    legacy = pre_band.difference(EXIT_CONTROL_FIELDS)
+    if not isinstance(value, dict) or set(value) not in (current, pre_band, legacy):
         raise ValueError("invalid saved paper configuration")
     return PaperConfig(**value)
 
@@ -576,10 +586,16 @@ class PaperEngine:
             self._status, self._message = "warming_up", "Warming up BTC momentum (20 seconds)."
             return []
         strike = _num(book.get("strike_price"))
-        if self.config.require_toward_strike and (strike is None or strike <= 0
+        if (self.config.require_toward_strike or self.config.floor_distance_enabled) and (strike is None or strike <= 0
                 or book.get("strike_source") != "kalshi.floor_strike"):
             self._status, self._message = "watching", "Waiting for verified Kalshi strike price."
             return []
+        if self.config.floor_distance_enabled:
+            distance = (signal["midpoint"] - strike) / strike * 100
+            if (distance < -self.config.max_below_floor_percent - 1e-10
+                    or distance > self.config.max_above_floor_percent + 1e-10):
+                self._status, self._message = "watching", "BTC is outside the allowed percentage band around the floor."
+                return []
         self._status, self._message = "watching", "Watching momentum, trade flow, and visible liquidity."
         if flow is None or wall_time < self.cooldown_until or not self._available_revision(book):
             return []

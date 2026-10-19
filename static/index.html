@@ -61,6 +61,11 @@
                 <label class="setting-check" for="setting-toward-strike"><input id="setting-toward-strike" name="toward_strike_only" type="checkbox" checked><span>Only buy toward the strike <small>Up: below and rising. Down: above and falling.</small><small id="settings-strike">Strike appears when available.</small></span></label>
                 <label class="setting-check" for="setting-entries"><input id="setting-entries" name="entries_enabled" type="checkbox" checked><span>Allow new paper buys</span></label>
               </div>
+              <div class="dynamic-settings">
+                <label class="setting-check" for="setting-floor-band"><input id="setting-floor-band" name="floor_distance_enabled" type="checkbox"><span>Limit entry distance from floor<small>BTC must stay within these percentages of Kalshi’s floor price.</small></span></label>
+                <div class="dynamic-range" id="floor-band-range"><label class="setting-field" for="setting-floor-below"><span>Maximum below <small>%</small></span><input id="setting-floor-below" name="max_below_floor_percent" type="number" min="0" max="100" step="0.001" inputmode="decimal" required value="0.10"></label><label class="setting-field" for="setting-floor-above"><span>Maximum above <small>%</small></span><input id="setting-floor-above" name="max_above_floor_percent" type="number" min="0" max="100" step="0.001" inputmode="decimal" required value="0.10"></label></div>
+                <span class="settings-help" id="settings-floor-band-preview">0.10 means 0.10%. New entries only; exits are unchanged.</span>
+              </div>
               <p class="settings-exit-note" id="settings-exit-note">Minimum sale is for profit-taking. Risk exits can sell lower.</p>
               <details class="advanced-settings"><summary>Risk &amp; entry filters</summary><div class="settings-grid">
                 <label class="setting-field" for="setting-stop-loss"><span>Stop loss <small>¢ below entry</small></span><input id="setting-stop-loss" name="stop_loss_cents" type="number" min="0.1" max="95" step="0.1" inputmode="decimal" required value="12"></label>
