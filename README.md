@@ -122,6 +122,50 @@ For a larger collection, `--date YYYY-MM-DD` selects research snapshots for one 
 
 Research snapshots pause at a default **2 GiB** storage budget, or when free disk space falls below 128 MiB. The status bar reports a save error. Export/archive the evidence, then start a fresh file with `--research-state data/research-next.sqlite3` (and use that path when exporting). `--research-max-mib` adjusts the budget; `--no-research` disables collection. `--check` and `--no-paper` do not start the recorder. Existing paper balances, trades, settings, entry/exit rules, and the settlement display model are unchanged.
 
+## Fast historical simulations
+
+Run the simulator from the project folder in PowerShell, macOS, or Linux:
+
+```bash
+uv run python -m feedboard.simulate --days 7
+```
+
+The first run downloads public Kalshi BTC 15-minute market metadata, official outcomes, and one-minute bid/ask candles. It batches recent-market requests, limits API request rates, and stores compressed candles in **`data/history.sqlite3`**. Interrupted downloads resume from completed markets. Older dates use Kalshi's historical endpoints where needed; an archived catalog scan can take longer. No API key is required.
+
+After the download, comparisons run locally without waiting for market time. **270 configurations across 664 actual markets took about one second** in a development check; your computer and dataset will affect speed. To repeat with no network requests, including after restarting:
+
+```bash
+uv run python -m feedboard.simulate --offline
+```
+
+With no date arguments, offline mode reuses the latest cached date range. Online mode defaults to the last seven **completed UTC close-dates**, excluding today. Explicit dates use an inclusive start and exclusive end:
+
+```bash
+uv run python -m feedboard.simulate --start 2026-08-01 --end 2026-08-08
+uv run python -m feedboard.simulate --days 30 --fetch-only
+```
+
+The default grid compares minimum/maximum buy prices, fixed sell targets through 95¢, a settlement baseline, spread limits, and entry windows **0–13, 5–13, and 5–10 minutes**. End minutes are excluded, so **5–13 skips the first five and final two minutes**. To narrow the experiments:
+
+```bash
+uv run python -m feedboard.simulate --offline --windows "5-13" --buy-min "10,20" --buy-max "35,40" --sell-targets "80,90,95,settlement"
+```
+
+Other options include `--side up`, `--side down`, `--contracts 5`, `--slippage-cents 1`, `--stop-loss-cents 12`, and `--cash 1000`. Stops are off by default. `--sell-targets settlement` removes profit targets; it holds for the official result unless an optional stop is enabled. This baseline differs from the live bot's Hold checkbox, which retains profit targets. Run `--help` for all options. A grid is limited to 2,000 configurations.
+
+Each run writes a unique folder and matching **ZIP in `data/simulations`**. Send that ZIP for analysis. It contains:
+
+- **`summary.json`**: exact UTC range, dataset/code hashes, coverage gaps, timing, assumptions, and the training-selected configuration with its later test results.
+- **`leaderboard.csv`**: all configurations ordered by training performance, with separate training and later test metrics, estimated fees, win rate, drawdown, and exit counts.
+- **`selected_trades.csv`**: the selected configuration's trades, directions, entry minutes, timestamps, prices, fees, exit reasons, and P&L.
+- **`grid.json`** and **`READ_ME.txt`**: reproducible configurations and interpretation notes. Reuse an exported grid with `--grid path/to/grid.json`; also retain the same cached dates, cash, train fraction, and trade-count threshold.
+
+Selection uses only the earlier 70% of markets, with at least ten training trades required by default. A boundary gap prevents unresolved training settlements from leaking into the later period. Training and test each start with the configured cash. The later results never choose the winner. A winning training configuration can lose on the later period, as it did in our seven-day check. Repeated tuning against the same test period removes its value as unseen evidence.
+
+These are **price/time candle experiments**, not a replay of the live strategy or a calibrated mispricing model. Historical candles lack Kraken's five-second momentum, flow, whales, synchronized book depth, and the live dynamic-exit inputs. The simulator buys observed asks and sells observed bids with configurable slippage and estimated general taker fees. It uses only minute **opening quotes**: highs, lows, closes, future volume, and the eventual winner never select entries or trigger earlier fills. No same-minute exit is allowed. Targets must be met after slippage at a later minute open. Available quantity is assumed, so execution remains uncertain. Open trades settle to the official result, using the recorded settlement timestamp when available and close time otherwise; missing timestamps are counted in the report. Drawdown is based on realized equity, and historical fee-schedule changes are not reconstructed.
+
+Missing or crossed quotes are skipped without interpolation. Incomplete downloads stop the simulation by default; `--allow-partial` explicitly permits missing markets and records them. Calendar coverage and missing candles are reported separately. Use `--refresh` online to recheck a cached catalog and candles. The cache, reports, and existing paper/research databases stay local and are excluded from Git. This command neither changes the live bot's settings nor applies a winning simulation configuration automatically. Continue collecting live research to test signals and execution that candles cannot represent.
+
 ## Behavior and limits
 
 - Kraken uses public WebSocket v2 `ticker` with `event_trigger: bbo` plus a public `trade` subscription for paper signals. Twenty-second trade flow uses bounded 250 ms buckets and replay protection; historical subscription snapshots are excluded. Failed connections retry with capped jittered backoff and take one REST sample per retry when possible. The dashboard shows the actual transport; REST fallback pauses new paper entries.
