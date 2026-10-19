@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -44,18 +45,30 @@ class PaperControl:
     def disable(self, message):
         self.available = False
         while not self.requests.empty():
-            _, _, future = self.requests.get_nowait()
+            _, _, future, _ = self.requests.get_nowait()
             if not future.done():
                 future.set_exception(SettingsUnavailable(message))
 
-    async def change(self, values, expected_revision):
+    async def change(self, values, expected_revision, *, apply_exit_controls_to_position=None):
         if not self.available:
             raise SettingsUnavailable("Paper settings are unavailable while the engine is paused or starting")
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
             raise ValueError("A nonnegative settings revision is required; reload settings first")
+        if apply_exit_controls_to_position is not None:
+            identity = apply_exit_controls_to_position
+            if (not isinstance(identity, dict) or set(identity) != {"ticker", "opened_at"}
+                    or not isinstance(identity["ticker"], str) or not identity["ticker"]
+                    or isinstance(identity["opened_at"], bool) or not isinstance(identity["opened_at"], (int, float))):
+                raise ValueError("Identify the open trade by its ticker and numeric opened_at time")
+            try:
+                valid_time = math.isfinite(identity["opened_at"]) and identity["opened_at"] >= 0
+            except OverflowError:
+                valid_time = False
+            if not valid_time:
+                raise ValueError("Open trade time must be finite and nonnegative")
         future = asyncio.get_running_loop().create_future()
         try:
-            self.requests.put_nowait((values, expected_revision, future))
+            self.requests.put_nowait((values, expected_revision, future, apply_exit_controls_to_position))
         except asyncio.QueueFull:
             raise SettingsUnavailable("A settings update is already pending; try again shortly")
         return await future
@@ -126,7 +139,7 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
     try:
         state, revision = await asyncio.to_thread(journal.load)
         engine = PaperEngine(config, state)
-        if state is None or "config" not in state:
+        if state is None or state.get("config") != engine.dump_state().get("config"):
             revision = await asyncio.to_thread(journal.save, engine.dump_state(), [], revision)
     except (OSError, sqlite3.Error, ValueError, RuntimeError):
         LOG.exception("Paper journal could not be loaded; paper trading is paused")
@@ -142,7 +155,7 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
         while True:
             try:
                 if pending is None and not control.requests.empty():
-                    values, expected, future = control.requests.get_nowait()
+                    values, expected, future, position_identity = control.requests.get_nowait()
                     active_request = future
                     if future.cancelled():
                         active_request = None
@@ -153,13 +166,19 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
                         updated = apply_public_settings(engine.config, values)
                         candidate = copy.deepcopy(engine)
                         candidate.set_config(updated)
+                        if position_identity is not None:
+                            if (candidate.position is None
+                                    or candidate.position["ticker"] != position_identity["ticker"]
+                                    or candidate.position["opened_at"] != position_identity["opened_at"]):
+                                raise SettingsConflict("The open trade changed or closed; reload before applying exit controls")
+                            candidate.apply_exit_controls_to_position(**position_identity, wall_time=time.time())
                     except ValueError as error:
                         if not future.done():
                             future.set_exception(error)
                         active_request = None
                         continue
                     try:
-                        if candidate.config != engine.config:
+                        if candidate.dump_state() != engine.dump_state():
                             revision = await asyncio.to_thread(journal.save, candidate.dump_state(), [], revision)
                     except (OSError, sqlite3.Error, ValueError, RuntimeError) as error:
                         LOG.exception("Paper settings save could not be confirmed; trading is paused")
@@ -177,7 +196,8 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
                     store.paper = engine.snapshot()
                     store.revision += 1
                     if not future.done():
-                        future.set_result({"status": "saved", **control.document()})
+                        future.set_result({"status": "saved", "applied_to_position": position_identity is not None,
+                                           **control.document()})
                     active_request = None
                     # The next decision uses the committed rules; saving itself never places an order.
                     await asyncio.sleep(0.1)

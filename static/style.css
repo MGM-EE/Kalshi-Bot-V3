@@ -390,6 +390,46 @@ h1 {
 .settings-exit-note {
   margin:14px 0 0;
 }
+.exit-behavior {
+  border:0;
+  padding:0;
+  margin:22px 0 0;
+  min-width:0;
+}
+.exit-behavior>legend {
+  padding:0;
+  margin-bottom:13px;
+  color:var(--text);
+  font-size:11px;
+}
+.exit-checks {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:12px 18px;
+  margin-top:16px;
+}
+.exit-checks[aria-disabled=true] .setting-check {
+  color:var(--muted);
+  cursor:default;
+}
+.exit-checks input:disabled {
+  opacity:.45;
+}
+#settings-hold-note {
+  margin:13px 0 0;
+}
+.settings-open-policy {
+  color:var(--green);
+  font-size:10px;
+  line-height:1.6;
+  margin:13px 0 0;
+}
+.settings-apply-open {
+  margin-top:13px;
+}
+.settings-apply-open[data-stale=true] small {
+  color:var(--amber);
+}
 .advanced-settings {
   border-top:1px solid var(--line);
   margin-top:18px;
@@ -969,6 +1009,10 @@ a:focus-visible {
   .settings-toggles {
     flex-direction:column;
     gap:16px;
+  }
+  .exit-checks {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:13px;
   }
   .settings-summary {
     font-size:8px;

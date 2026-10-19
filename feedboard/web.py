@@ -43,9 +43,13 @@ async def paper_settings(request: web.Request):
         return web.json_response({"error": "Settings must be sent as application/json"}, status=415)
     try:
         payload = await request.json()
-        if not isinstance(payload, dict) or set(payload) != {"settings", "revision"}:
+        if (not isinstance(payload, dict) or not {"settings", "revision"} <= set(payload)
+                or set(payload) - {"settings", "revision", "apply_exit_controls_to_position"}):
             raise ValueError("Send settings and revision; reload settings to get the current revision")
-        document = await control.change(payload["settings"], payload["revision"])
+        if "apply_exit_controls_to_position" in payload and payload["apply_exit_controls_to_position"] is None:
+            raise ValueError("Identify the open trade by its ticker and opened_at time; omit the field for future entries only")
+        document = await control.change(payload["settings"], payload["revision"],
+                                        apply_exit_controls_to_position=payload.get("apply_exit_controls_to_position"))
         return web.json_response(document, headers={"Cache-Control": "no-store"})
     except SettingsConflict as error:
         return web.json_response({"error": str(error)}, status=409)

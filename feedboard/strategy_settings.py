@@ -25,6 +25,11 @@ _BOOLEANS = {
     "dynamic_enabled": "dynamic_exit_enabled",
     "toward_strike_only": "require_toward_strike",
     "entries_enabled": "entries_enabled",
+    "hold_to_settlement": "hold_to_settlement",
+    "exit_on_stop_loss": "exit_on_stop_loss",
+    "exit_on_reversal": "exit_on_reversal",
+    "exit_on_max_hold": "exit_on_max_hold",
+    "exit_before_expiry": "exit_before_expiry",
 }
 
 

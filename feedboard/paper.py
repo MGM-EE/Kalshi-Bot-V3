@@ -14,6 +14,16 @@ from datetime import datetime, timezone
 from statistics import pstdev
 
 
+EXIT_CONTROL_FIELDS = (
+    "hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal",
+    "exit_on_max_hold", "exit_before_expiry",
+)
+
+
+def _exit_controls(config):
+    return {name: getattr(config, name) for name in EXIT_CONTROL_FIELDS}
+
+
 def _num(value):
     if isinstance(value, bool):
         return None
@@ -87,6 +97,11 @@ class PaperConfig:
     max_spread: float = 0.04
     min_momentum_bps: float = 0.75
     flow_imbalance: float = 0.12
+    hold_to_settlement: bool = False
+    exit_on_stop_loss: bool = True
+    exit_on_reversal: bool = True
+    exit_on_max_hold: bool = True
+    exit_before_expiry: bool = True
 
     def __post_init__(self):
         numeric = (self.initial_cash, self.warmup_seconds, self.cooldown_seconds,
@@ -98,7 +113,8 @@ class PaperConfig:
                for v in numeric):
             raise ValueError("paper configuration must be finite")
         if any(not isinstance(v, bool) for v in
-               (self.dynamic_exit_enabled, self.require_toward_strike, self.entries_enabled)):
+               (self.dynamic_exit_enabled, self.require_toward_strike, self.entries_enabled,
+                *(getattr(self, name) for name in EXIT_CONTROL_FIELDS))):
             raise ValueError("paper configuration toggles must be booleans")
         if (isinstance(self.contracts, bool) or not isinstance(self.contracts, int)
                 or not 1 <= self.contracts <= 100 or self.initial_cash <= 0
@@ -116,8 +132,10 @@ class PaperConfig:
 
 
 def _saved_config(value):
-    """Saved settings must be complete; missing settings in an old journal are optional."""
-    if not isinstance(value, dict) or value.keys() != {field.name for field in fields(PaperConfig)}:
+    """Accept complete current settings or the one complete pre-control schema."""
+    current = {field.name for field in fields(PaperConfig)}
+    legacy = current.difference(EXIT_CONTROL_FIELDS)
+    if not isinstance(value, dict) or set(value) not in (current, legacy):
         raise ValueError("invalid saved paper configuration")
     return PaperConfig(**value)
 
@@ -200,6 +218,17 @@ class PaperEngine:
                     revision = position["config_revision"]
                     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
                         raise ValueError("invalid position configuration revision")
+                if "exit_controls_revision" in position:
+                    revision = position["exit_controls_revision"]
+                    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                        raise ValueError("invalid position exit-control revision")
+                if "exit_controls_updated_at" in position:
+                    if _timestamp(position["exit_controls_updated_at"]) is None:
+                        raise ValueError("invalid position exit-control timestamp")
+                if "exit_controls_config_revision" in position:
+                    revision = position["exit_controls_config_revision"]
+                    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                        raise ValueError("invalid position exit-control configuration revision")
             events = state["events"]
             if not isinstance(events, list) or len(events) > 20:
                 raise ValueError("invalid event list")
@@ -224,6 +253,15 @@ class PaperEngine:
                     revision = event["config_revision"]
                     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
                         raise ValueError("invalid event configuration revision")
+                if "exit_controls" in event:
+                    controls = event["exit_controls"]
+                    if (not isinstance(controls, dict) or set(controls) != set(EXIT_CONTROL_FIELDS)
+                            or any(not isinstance(value, bool) for value in controls.values())):
+                        raise ValueError("invalid event exit controls")
+                if "exit_controls_revision" in event:
+                    revision = event["exit_controls_revision"]
+                    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                        raise ValueError("invalid event exit-control revision")
             self.position = position
             self.events = deque(copy.deepcopy(events), maxlen=20)
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -257,12 +295,41 @@ class PaperEngine:
         # exit rules, even if new account settings differ after an upgrade.
         return PaperConfig(require_toward_strike=False)
 
+    def apply_exit_controls_to_position(self, *, ticker: str, opened_at: float, wall_time: float):
+        """Explicitly copy only current exit toggles onto the identified open position.
+
+        Entries retain their original event and other entry-time rules. Identity
+        checks prevent a delayed UI action from modifying a newer position.
+        """
+        if (self.position is None or not isinstance(ticker, str)
+                or not isinstance(opened_at, (int, float)) or _num(opened_at) is None
+                or self.position["ticker"] != ticker or self.position["opened_at"] != opened_at):
+            raise ValueError("The open position changed; refresh before applying exit controls.")
+        if not isinstance(wall_time, (int, float)) or _num(wall_time) is None:
+            raise ValueError("Exit-control update time must be finite.")
+        try:
+            updated_at = _iso(wall_time)
+        except (ValueError, OverflowError, OSError) as exc:
+            raise ValueError("Exit-control update time is outside the supported range.") from exc
+        previous = self._position_config()
+        if _exit_controls(previous) == _exit_controls(self.config):
+            return False
+        rules = asdict(previous)
+        rules.update(_exit_controls(self.config))
+        self.position["rules"] = asdict(PaperConfig(**rules))
+        self.position["exit_controls_revision"] = self.position.get("exit_controls_revision", 0) + 1
+        self.position["exit_controls_updated_at"] = updated_at
+        self.position["exit_controls_config_revision"] = self.config_revision
+        return True
+
     def snapshot(self):
         position = copy.deepcopy(self.position)
         unrealized = 0.0 if position is None else None
         equity = self.cash if position is None else None
         if position is not None:
             position["mark"] = self._mark
+            position["exit_controls"] = _exit_controls(self._position_config())
+            position.setdefault("exit_controls_revision", 0)
             if self._mark is not None:
                 value = position["contracts"] * self._mark
                 fee = taker_fee(position["contracts"], self._mark)
@@ -287,6 +354,9 @@ class PaperEngine:
         if kind == "entry":
             event["rules"] = copy.deepcopy(position["rules"])
             event["config_revision"] = position["config_revision"]
+        else:
+            event["exit_controls"] = _exit_controls(self._position_config())
+            event["exit_controls_revision"] = position.get("exit_controls_revision", 0)
         self.events.append(event)
         return copy.deepcopy(event)
 
@@ -471,13 +541,16 @@ class PaperEngine:
                 reason = "hard_95c"
             elif bid >= self.position["exit_target"]:
                 reason = "dynamic_target" if rules.dynamic_exit_enabled else "fixed_target"
-            elif bid <= self.position["entry_price"] - rules.stop_loss:
+            elif (not rules.hold_to_settlement and rules.exit_on_stop_loss
+                  and bid <= self.position["entry_price"] - rules.stop_loss):
                 reason = "stop_loss"
-            elif remaining_time <= 30:
+            elif not rules.hold_to_settlement and rules.exit_before_expiry and remaining_time <= 30:
                 reason = "expiry_risk"
-            elif wall_time - self.position["opened_at"] >= rules.max_hold_seconds:
+            elif (not rules.hold_to_settlement and rules.exit_on_max_hold
+                  and wall_time - self.position["opened_at"] >= rules.max_hold_seconds):
                 reason = "max_hold"
-            elif (signal and flow and direction * signal["five"] <= -signal["floor5"]
+            elif (not rules.hold_to_settlement and rules.exit_on_reversal
+                  and signal and flow and direction * signal["five"] <= -signal["floor5"]
                   and direction * flow["signed"] <= -rules.flow_imbalance):
                 reason = "momentum_reversal"
             return self._exit(book, bids, reason, wall_time) if reason else []

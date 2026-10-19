@@ -23,9 +23,10 @@
   let lastPaperEvent = null;
   let activePaperEvent = null;
   let paperEventTimer = null;
-  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent"];
+  const exitControlNames = ["hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal", "exit_on_max_hold", "exit_before_expiry"];
+  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent", ...exitControlNames];
   const settingInputs = Object.fromEntries(settingNames.map(name => [name, el["settings-form"].elements.namedItem(name)]));
-  const settingsState = { loaded: false, attempted: false, available: false, busy: false, saving: false, revision: null, saved: null, conflict: false };
+  const settingsState = { loaded: false, attempted: false, available: false, busy: false, saving: false, revision: null, saved: null, conflict: false, applyPosition: null };
 
   function setText(node, value) {
     if (node.textContent !== value) node.textContent = value;
@@ -47,6 +48,34 @@
     return settingsState.saved !== null && settingNames.some(name => current[name] !== settingsState.saved[name]);
   }
 
+  function positionIdentity(position = snapshot?.paper?.position) {
+    return position && typeof position.ticker === "string" && numeric(position.opened_at) ? { ticker: position.ticker, opened_at: position.opened_at } : null;
+  }
+
+  function applyingExitControls() {
+    return el["setting-apply-open"].checked && settingsState.applyPosition !== null;
+  }
+
+  function renderOpenTradeControls(position) {
+    const identity = positionIdentity(position);
+    const controls = position?.exit_controls;
+    el["settings-open-policy"].hidden = !position;
+    if (position) {
+      const complete = controls && exitControlNames.every(name => typeof controls[name] === "boolean");
+      const early = complete && !controls.hold_to_settlement && exitControlNames.slice(1).some(name => controls[name]);
+      setText(el["settings-open-policy"], !complete ? "Open trade: saved exit rules" : early ? "Open trade: early exits enabled" : "Open trade: profit target or settlement");
+      el["settings-open-policy"].title = complete ? `Profit targets: active. Hold to settlement: ${controls.hold_to_settlement ? "on" : "off"}. ${[["Stop loss", "exit_on_stop_loss"], ["Momentum reversal", "exit_on_reversal"], ["Maximum hold", "exit_on_max_hold"], ["Before expiry", "exit_before_expiry"]].map(([label, name]) => `${label}: ${!controls.hold_to_settlement && controls[name] ? "on" : "off"}`).join(". ")}.` : "Waiting for the open trade’s saved exit controls.";
+    }
+    const showApply = Boolean(position || applyingExitControls());
+    const visibilityChanged = el["settings-apply-open"].hidden !== !showApply;
+    el["settings-apply-open"].hidden = !showApply;
+    const selected = settingsState.applyPosition;
+    const stale = applyingExitControls() && (!identity || identity.ticker !== selected.ticker || identity.opened_at !== selected.opened_at);
+    el["settings-apply-open"].dataset.stale = String(stale);
+    setText(el["settings-apply-open-note"], stale ? "The selected trade changed or closed. Uncheck to save for future entries only; check again to select the current trade." : "Only the five exit switches change. Profit prices, stop-loss distance and maximum hold time stay with the open trade.");
+    if (visibilityChanged) updateSettingsControls();
+  }
+
   function settingsMessage(message, state = "") {
     setText(el["settings-status"], message);
     el["settings-status"].dataset.state = state;
@@ -58,7 +87,13 @@
     el["dynamic-range"].setAttribute("aria-disabled", String(!dynamic));
     settingInputs.dynamic_min_cents.disabled = !dynamic;
     settingInputs.dynamic_max_cents.disabled = !dynamic;
-    el["settings-save"].disabled = settingsState.busy || !settingsState.loaded || !settingsState.available || settingsState.conflict || !settingsDirty();
+    const hold = settingInputs.hold_to_settlement.checked;
+    for (const name of exitControlNames.slice(1)) settingInputs[name].disabled = hold;
+    el["settings-early-exits"].setAttribute("aria-disabled", String(hold));
+    settingInputs.stop_loss_cents.disabled = hold || !settingInputs.exit_on_stop_loss.checked;
+    settingInputs.max_hold_seconds.disabled = hold || !settingInputs.exit_on_max_hold.checked;
+    el["setting-apply-open"].disabled = !positionIdentity() && !el["setting-apply-open"].checked;
+    el["settings-save"].disabled = settingsState.busy || !settingsState.loaded || !settingsState.available || settingsState.conflict || !settingsDirty() && !applyingExitControls();
     setText(el["settings-save"], settingsState.saving ? "Saving…" : "Save settings");
     el["settings-reload"].disabled = settingsState.busy;
   }
@@ -117,6 +152,8 @@
     settingsState.revision = body.revision;
     settingsState.saved = Object.fromEntries(settingNames.map(name => [name, body.settings[name]]));
     settingsState.conflict = false;
+    settingsState.applyPosition = null;
+    el["setting-apply-open"].checked = false;
     for (const name of settingNames) {
       const input = settingInputs[name];
       if (input.type === "checkbox") input.checked = body.settings[name];
@@ -125,6 +162,7 @@
     clearSettingsErrors();
     el["settings-reload"].hidden = false;
     setText(el["settings-reload"], "Reload saved settings");
+    renderOpenTradeControls(snapshot?.paper?.position);
   }
 
   async function loadSettings() {
@@ -149,7 +187,7 @@
 
   async function saveSettings(event) {
     event.preventDefault();
-    if (settingsState.busy || !settingsState.loaded || !settingsState.available || settingsState.conflict || !settingsDirty()) return;
+    if (settingsState.busy || !settingsState.loaded || !settingsState.available || settingsState.conflict || !settingsDirty() && !applyingExitControls()) return;
     clearSettingsErrors();
     const settings = formSettings();
     const invalid = validateSettings(settings);
@@ -166,13 +204,15 @@
     settingsMessage("Saving settings…");
     updateSettingsControls();
     try {
-      const body = await settingsRequest({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings, revision: settingsState.revision }) });
+      const payload = { settings, revision: settingsState.revision };
+      if (applyingExitControls()) payload.apply_exit_controls_to_position = { ...settingsState.applyPosition };
+      const body = await settingsRequest({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       acceptSettings(body);
-      settingsMessage("Saved. The next entry will use these settings.", "saved");
+      settingsMessage(body.applied_to_position === true ? "Saved exit controls for the open trade; other changes apply next entry." : "Saved. The next entry will use these settings.", "saved");
     } catch (error) {
       if (error.status === 409) {
         settingsState.conflict = true;
-        settingsError("Settings changed in another window. Your edits are still here. Reload saved settings before trying again.");
+        settingsError(`${error.message} Your edits are still here. Reload saved settings before trying again.`);
         el["settings-reload"].hidden = false;
       } else {
         settingsError(error.name === "AbortError" ? "Saving timed out. Your edits are still here. Reload saved settings to check whether they were saved." : error.message, error.fields);
@@ -282,6 +322,7 @@
     el["paper-panel"].dataset.status = state;
     setText(el["paper-status"], !connected ? connectionState === "retrying" ? "Reconnecting" : "Connecting" : paperStatusLabels[state] || "Watching");
     const position = paper.position;
+    renderOpenTradeControls(position);
     const entriesPaused = connected && feedsLive && paper.config?.entries_enabled === false;
     let positionText = entriesPaused ? "New paper buys paused" : state === "warming_up" ? "Collecting a little history" : state === "paused" ? "Waiting for fresh data" : "Waiting for a setup";
     if (position) positionText = `Holding ${paperSide(position.side)} ×${integer.format(position.contracts)}`;
@@ -469,9 +510,17 @@
   el["settings-form"].addEventListener("submit", saveSettings);
   el["settings-reload"].addEventListener("click", loadSettings);
   el["settings-form"].addEventListener("input", event => {
+    if (event.target === el["setting-apply-open"]) {
+      settingsState.applyPosition = event.target.checked ? positionIdentity() : null;
+      if (event.target.checked && !settingsState.applyPosition) event.target.checked = false;
+      if (!settingsState.conflict) settingsMessage(applyingExitControls() ? "Exit controls will also apply to the selected open trade when saved." : settingsDirty() ? "Unsaved changes." : "Saved settings loaded.", applyingExitControls() || settingsDirty() ? "" : "saved");
+      renderOpenTradeControls(snapshot?.paper?.position);
+      updateSettingsControls();
+      return;
+    }
     if (!Object.values(settingInputs).includes(event.target)) return;
     clearSettingsErrors();
-    if (!settingsState.conflict) settingsMessage(settingsDirty() ? "Unsaved changes." : "Saved settings loaded.", settingsDirty() ? "" : "saved");
+    if (!settingsState.conflict) settingsMessage(settingsDirty() || applyingExitControls() ? "Unsaved changes." : "Saved settings loaded.", settingsDirty() || applyingExitControls() ? "" : "saved");
     updateSettingsControls();
   });
 

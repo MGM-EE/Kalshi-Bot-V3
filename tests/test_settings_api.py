@@ -96,7 +96,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.save(client, full)
         self.assertEqual(response.status, 200)
         saved = await response.json()
-        self.assertEqual(saved, {"status": "saved", "settings": full,
+        self.assertEqual(saved, {"status": "saved", "applied_to_position": False, "settings": full,
                                  "revision": 1, "available": True})
         persisted, disk_revision = PaperJournal(self.path).load()
         self.assertEqual(persisted["config_revision"], 1)

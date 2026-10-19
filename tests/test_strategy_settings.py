@@ -15,6 +15,8 @@ class StrategySettingsTests(unittest.TestCase):
             "dynamic_max_cents", "dynamic_enabled", "toward_strike_only", "entries_enabled",
             "contracts", "stop_loss_cents", "max_spread_cents", "max_hold_seconds",
             "cooldown_seconds", "min_momentum_bps", "min_flow_percent",
+            "hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal",
+            "exit_on_max_hold", "exit_before_expiry",
         })
         self.assertEqual(apply_public_settings(config, public), config)
         self.assertTrue(public["toward_strike_only"])
@@ -47,7 +49,9 @@ class StrategySettingsTests(unittest.TestCase):
         self.assertEqual(public_settings(config)["min_flow_percent"], 29)
 
     def test_boolean_toggles_accept_only_booleans(self):
-        keys = ("dynamic_enabled", "toward_strike_only", "entries_enabled")
+        keys = ("dynamic_enabled", "toward_strike_only", "entries_enabled",
+                "hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal",
+                "exit_on_max_hold", "exit_before_expiry")
         for key in keys:
             with self.subTest(key=key):
                 config = apply_public_settings(PaperConfig(), {key: False})
@@ -61,6 +65,8 @@ class StrategySettingsTests(unittest.TestCase):
     def test_numeric_settings_reject_strings_booleans_nonfinite_and_overflow(self):
         keys = set(public_settings(PaperConfig())) - {
             "dynamic_enabled", "toward_strike_only", "entries_enabled",
+            "hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal",
+            "exit_on_max_hold", "exit_before_expiry",
         }
         invalids = ("10", True, False, None, [], {}, float("nan"), float("inf"),
                     -float("inf"), 10**1000)

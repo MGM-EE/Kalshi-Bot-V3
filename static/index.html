@@ -30,7 +30,7 @@
         <details class="trade-settings" id="trade-settings">
           <summary><span>Trade settings</span><span class="settings-summary">Paper trading only</span></summary>
           <form id="settings-form" novalidate>
-            <p class="settings-intro">Changes apply to the next entry; open trades keep their saved exit rules.</p>
+            <p class="settings-intro">Settings apply to new entries. Check below to change only the open trade’s exit controls.</p>
             <fieldset id="settings-fields" disabled>
               <legend class="visually-hidden">Paper trade conditions</legend>
               <div class="settings-grid">
@@ -44,6 +44,19 @@
                 <div class="dynamic-range" id="dynamic-range"><label class="setting-field" for="setting-dynamic-min"><span>From <small>¢ / share</small></span><input id="setting-dynamic-min" name="dynamic_min_cents" type="number" min="1" max="95" step="0.1" inputmode="decimal" required value="80"></label><span class="range-divider" aria-hidden="true">–</span><label class="setting-field" for="setting-dynamic-max"><span>To <small>¢ / share</small></span><input id="setting-dynamic-max" name="dynamic_max_cents" type="number" min="1" max="95" step="0.1" inputmode="decimal" required value="95"></label></div>
                 <span class="settings-help">Fixed profit-exit cap: 95¢</span>
               </div>
+              <fieldset class="exit-behavior" aria-describedby="settings-hold-help settings-hold-note">
+                <legend>Exit behavior</legend>
+                <label class="setting-check" for="setting-hold-settlement"><input id="setting-hold-settlement" name="hold_to_settlement" type="checkbox"><span>Hold to settlement<small id="settings-hold-help">Keep profit targets active. Disable stop-loss, reversal, maximum-hold and pre-expiry sales; otherwise wait for official settlement.</small></span></label>
+                <div class="exit-checks" id="settings-early-exits">
+                  <label class="setting-check" for="setting-exit-stop"><input id="setting-exit-stop" name="exit_on_stop_loss" type="checkbox" checked><span>Stop loss</span></label>
+                  <label class="setting-check" for="setting-exit-reversal"><input id="setting-exit-reversal" name="exit_on_reversal" type="checkbox" checked><span>Momentum reversal</span></label>
+                  <label class="setting-check" for="setting-exit-hold"><input id="setting-exit-hold" name="exit_on_max_hold" type="checkbox" checked><span>Maximum hold</span></label>
+                  <label class="setting-check" for="setting-exit-expiry"><input id="setting-exit-expiry" name="exit_before_expiry" type="checkbox" checked><span>Before expiry</span></label>
+                </div>
+                <p class="settings-help" id="settings-hold-note">Holding through settlement can lose the full position value if the contract settles at 0¢.</p>
+                <p class="settings-open-policy" id="settings-open-policy" hidden></p>
+                <div class="settings-apply-open" id="settings-apply-open" hidden><label class="setting-check" for="setting-apply-open"><input id="setting-apply-open" type="checkbox"><span>Apply these exit controls to the open trade<small id="settings-apply-open-note">Only the five exit switches change. Profit prices, stop-loss distance and maximum hold time stay with the open trade.</small></span></label></div>
+              </fieldset>
               <div class="settings-toggles">
                 <label class="setting-check" for="setting-toward-strike"><input id="setting-toward-strike" name="toward_strike_only" type="checkbox" checked><span>Only buy toward the strike <small>Up: below and rising. Down: above and falling.</small><small id="settings-strike">Strike appears when available.</small></span></label>
                 <label class="setting-check" for="setting-entries"><input id="setting-entries" name="entries_enabled" type="checkbox" checked><span>Allow new paper buys</span></label>
