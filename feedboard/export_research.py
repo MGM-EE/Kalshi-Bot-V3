@@ -6,8 +6,10 @@ Each part stands alone as a ZIP; send every part from an export together.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
+import tempfile
 import uuid
 import zipfile
 import zlib
@@ -20,6 +22,14 @@ from .research import SCHEMA, clean, iso
 PART_BYTES = 23 * 1024 * 1024
 MAX_LINE_BYTES = 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+SESSION_PREVIEW_LIMIT = 100
+
+
+def encode_line(value):
+    line = (json.dumps(clean(value), allow_nan=False, separators=(",", ":")) + "\n").encode()
+    if len(line) > MAX_LINE_BYTES:
+        raise ValueError("A single research record exceeds the 1 MiB safety limit")
+    return line
 
 
 @contextmanager
@@ -43,15 +53,14 @@ class Parts:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.manifest, self.limit = manifest, limit
-        self.prefix = "research-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:6]
+        self.prefix = ("research-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
+                       + manifest["export_id"][:6])
         self.paths = []
         self.archive = self.stream = None
         self.size = 0
 
     def add(self, value):
-        line = (json.dumps(clean(value), allow_nan=False, separators=(",", ":")) + "\n").encode()
-        if len(line) > MAX_LINE_BYTES:
-            raise ValueError("A single research record exceeds the 1 MiB safety limit")
+        line = encode_line(value)
         # Bound compressed upload size, rather than creating dozens of tiny ZIPs
         # from highly repetitive snapshots. Leave headroom for a final record,
         # the compressor's pending block, and ZIP directory overhead.
@@ -75,24 +84,106 @@ class Parts:
             self.archive.close()
             self.archive = None
 
+    def complete(self):
+        self.close()
+        # Every part carries a small completion descriptor so a detached upload
+        # can be matched to its bundle and missing parts are detectable.
+        for number, path in enumerate(self.paths, 1):
+            with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("bundle.json", json.dumps({"export_id": self.manifest["export_id"],
+                                  "part": number, "total_parts": len(self.paths), "complete": True}))
+
+
+def research_coverage(connection, where, parameters):
+    count, first, last = connection.execute(
+        "SELECT COUNT(*),MIN(captured_at),MAX(captured_at) FROM records" + where, parameters).fetchone()
+    kinds = dict(connection.execute("SELECT kind,COUNT(*) FROM records" + where + " GROUP BY kind", parameters))
+    preview, total = [], 0
+    for session, rows, low, high, start, end in connection.execute(
+            "SELECT session_id,COUNT(*),MIN(sequence),MAX(sequence),MIN(captured_at),MAX(captured_at)"
+            " FROM records" + where + " GROUP BY session_id ORDER BY MIN(captured_at),session_id", parameters):
+        total += 1
+        if len(preview) < SESSION_PREVIEW_LIMIT:
+            metadata = connection.execute("SELECT metadata FROM sessions WHERE session_id=?", (session,)).fetchone()
+            fingerprint = json.loads(metadata[0]).get("source_sha256") if metadata else None
+            # Manifests contain explicit provenance, never arbitrary session
+            # metadata (which can include local paths or endpoint URLs).
+            preview.append({"session_id": session, "records": rows, "first_sequence": low,
+                            "last_sequence": high, "sequence_positions_without_exported_record": high - low + 1 - rows,
+                            "first_record_at": start, "last_record_at": end,
+                            "source_sha256": fingerprint if isinstance(fingerprint, str)
+                            and len(fingerprint) == 64 and all(c in "0123456789abcdef" for c in fingerprint) else None})
+    return {"records": count, "types": kinds, "first_record_at": first, "last_record_at": last,
+            "session_count": total, "sessions": preview, "sessions_truncated": total > len(preview),
+            "session_scope": "Preview only; complete session metadata is in research.jsonl",
+            "sequence_gaps": "Missing positions can reflect recorder drops or the date filter"}
+
+
+def spool_paper(path, stream):
+    """Release the paper read snapshot before the potentially long ZIP export."""
+    if path is None:
+        return None
+    descriptor = {"event_count": 0, "first_event_id": None, "last_event_id": None,
+                  "first_event_at": None, "last_event_at": None, "journal_revision": None,
+                  "state_event_seq": None, "trade_count": None, "config_revision": None}
+    with read_database(path) as connection:
+        row = connection.execute("SELECT state,revision FROM paper_state WHERE id=1").fetchone()
+        if row:
+            state = json.loads(row[0])
+            descriptor.update(journal_revision=row[1], state_event_seq=state.get("event_seq"),
+                              trade_count=state.get("trade_count"), config_revision=state.get("config_revision", 0),
+                              state_sha256=hashlib.sha256(row[0].encode()).hexdigest())
+            stream.write(encode_line({"type": "paper_account", "revision": row[1], "state": state}))
+        for event_id, payload in connection.execute("SELECT event_id,payload FROM paper_events ORDER BY event_id"):
+            event = json.loads(payload)
+            descriptor["event_count"] += 1
+            descriptor["last_event_id"] = event_id
+            stamp = event.get("at")
+            if descriptor["first_event_id"] is None:
+                descriptor["first_event_id"] = event_id
+            if isinstance(stamp, str):
+                descriptor["first_event_at"] = min(descriptor["first_event_at"] or stamp, stamp)
+                descriptor["last_event_at"] = max(descriptor["last_event_at"] or stamp, stamp)
+            stream.write(encode_line({"type": "paper_event", "event_id": event_id, "event": event}))
+    stream.seek(0)
+    return descriptor
+
 
 def export(research_path, paper_path, output_dir, *, day=None, part_bytes=PART_BYTES):
     """Stream records without loading the database or an entire export into RAM."""
     if day is not None:
         day = date.fromisoformat(day)
-    manifest = {"format": "pulse-research-jsonl", "schema": SCHEMA, "exported_at": iso(),
+    manifest = {"format": "pulse-research-jsonl", "schema": SCHEMA, "export_id": uuid.uuid4().hex, "exported_at": iso(),
                 "research_file": Path(research_path).name, "paper_file": Path(paper_path).name if paper_path else None,
                 "research_date_utc": day.isoformat() if day else None,
                 "paper_history_scope": "all committed events; filter by event.at when analyzing a date",
                 "timestamps": "UTC ISO8601; monotonic clocks are comparable only within a session",
-                "coverage": "1-second normalized snapshots and committed fill context; not a lossless tick archive",
+                "coverage": "Sampled snapshots, optional engine-step decisions and committed fill context; not raw exchange ticks",
+                "decision_replay": "Full anchors resync context only; faithful replay needs uninterrupted inputs from startup; a date filter can omit required history",
                 "live_settlement_index": False,
                 "parts": "Send all parts with this filename prefix together; each is an independent ZIP"}
     parts = Parts(output_dir, manifest, limit=part_bytes)
     try:
-        with read_database(research_path) as connection:
+        # A small streaming spool avoids holding a DELETE-mode paper journal's
+        # read lock while compressing a much larger research database. The two
+        # databases are separate consistent snapshots, not an atomic pair.
+        with tempfile.TemporaryFile() as paper_stream, read_database(research_path) as connection:
             if connection.execute("SELECT version FROM research_meta").fetchone() != (SCHEMA,):
                 raise ValueError("Unsupported research schema")
+            where, parameters = "", ()
+            if day:
+                where = " WHERE captured_at >= ? AND captured_at < ?"
+                parameters = (day.isoformat() + "T00:00:00", (day + timedelta(days=1)).isoformat() + "T00:00:00")
+            research = research_coverage(connection, where, parameters)
+            if not research["records"]:
+                raise ValueError("No research records found for this export; check recorder status or --date")
+            paper = spool_paper(paper_path, paper_stream)
+            manifest.update(research_coverage=research, paper_coverage=paper,
+                            snapshot_scope="Each database has a consistent read snapshot; their snapshots are independent")
+            if paper:
+                manifest["paper_events_after_latest_research"] = bool(
+                    paper["last_event_at"] and research["last_record_at"]
+                    and paper["last_event_at"] > research["last_record_at"])
             for session_id, started, ended, metadata, summary in connection.execute("SELECT * FROM sessions ORDER BY started_at"):
                 parts.add({"type": "session", "session_id": session_id, "started_at": started, "ended_at": ended,
                            "metadata": json.loads(metadata), "summary": json.loads(summary) if summary else None})
@@ -102,10 +193,6 @@ def export(research_path, paper_path, output_dir, *, day=None, part_bytes=PART_B
                            "close_at": close, "metadata": json.loads(metadata), "result": result,
                            "result_at": result_at, "outcome_attempts": attempts,
                            "next_outcome_attempt": next_attempt, "outcome_error": error})
-            where, parameters = "", ()
-            if day:
-                where = " WHERE captured_at >= ? AND captured_at < ?"
-                parameters = (day.isoformat() + "T00:00:00", (day + timedelta(days=1)).isoformat() + "T00:00:00")
             rows = connection.execute("SELECT session_id,sequence,kind,captured_at,ticker,payload FROM records" +
                                       where + " ORDER BY captured_at,session_id,sequence", parameters)
             count = 0
@@ -114,17 +201,11 @@ def export(research_path, paper_path, output_dir, *, day=None, part_bytes=PART_B
                            "captured_at": captured_at, "ticker": ticker,
                            "payload": json.loads(zlib.decompress(payload))})
                 count += 1
-            if count == 0:
-                raise ValueError("No research records found for this export; check recorder status or --date")
-        if paper_path is not None:
-            with read_database(paper_path) as connection:
-                row = connection.execute("SELECT state,revision FROM paper_state WHERE id=1").fetchone()
-                if row:
-                    parts.add({"type": "paper_account", "revision": row[1], "state": json.loads(row[0])})
-                for event_id, payload in connection.execute("SELECT event_id,payload FROM paper_events ORDER BY event_id"):
-                    parts.add({"type": "paper_event", "event_id": event_id, "event": json.loads(payload)})
-        parts.add({"type": "export_complete", "research_records": count, "exported_at": iso()})
-        parts.close()
+            for line in paper_stream:
+                parts.add(json.loads(line))
+        parts.add({"type": "export_complete", "export_id": manifest["export_id"], "research_records": count,
+                   "research_coverage": research, "paper_coverage": paper, "exported_at": iso()})
+        parts.complete()
         return parts.paths
     except BaseException:
         parts.close()

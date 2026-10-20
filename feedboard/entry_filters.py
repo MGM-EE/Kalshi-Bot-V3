@@ -5,6 +5,21 @@ import math
 TREND_SECONDS = 60
 
 
+def entry_requirements(config, signal, side, context):
+    """Entry-local thresholds; never rewrite the signal used by risk exits."""
+    factor = 1.
+    if (config.range_bias_enabled and context.get("ready")
+            and context.get("regime") == "range" and side in ("up", "down")):
+        favored = context.get("favored")
+        if favored in ("up", "down"):
+            factor += -config.range_bias_strength if favored == side else config.range_bias_strength
+        elif context.get("position") is not None and .2 < context["position"] < .8:
+            factor += config.range_bias_strength / 2
+    return {"momentum5_bps": signal["floor5"] * factor,
+            "momentum20_bps": signal["floor20"] * factor,
+            "flow_imbalance": min(1., config.flow_imbalance * factor), "range_factor": factor}
+
+
 def in_entry_window(config, close, wall_time):
     if not config.entry_window_enabled:
         return True
@@ -58,17 +73,23 @@ class EntryQuality:
 
     def trend(self):
         if not self.points:
-            return {"efficiency": None, "coverage_seconds": 0, "points": 0}
+            return {"efficiency": None, "signed_efficiency": None, "net_change_bps": None,
+                    "coverage_seconds": 0, "points": 0}
         now = self.last_step
         anchor = next((i for i in range(len(self.points) - 1, -1, -1)
                        if self.points[i][0] <= now - TREND_SECONDS), None)
         coverage = max(0., now - self.points[0][0])
         if anchor is None:
-            return {"efficiency": None, "coverage_seconds": coverage, "points": len(self.points)}
+            return {"efficiency": None, "signed_efficiency": None, "net_change_bps": None,
+                    "coverage_seconds": coverage, "points": len(self.points)}
         points = list(self.points)[anchor:]
         movement = sum(abs(b[1] - a[1]) for a, b in zip(points, points[1:]))
-        efficiency = min(1., abs(points[-1][1] - points[0][1]) / movement) if movement else 0.
-        return {"efficiency": efficiency, "coverage_seconds": coverage, "points": len(points)}
+        change = points[-1][1] - points[0][1]
+        signed = max(-1., min(1., change / movement)) if movement else 0.
+        change_bps = change / points[0][1] * 10000
+        return {"efficiency": abs(signed), "signed_efficiency": signed,
+                "net_change_bps": change_bps if math.isfinite(change_bps) else None,
+                "coverage_seconds": coverage, "points": len(points)}
 
     def confirm(self, key, now, quote_token, book_version, seconds):
         self.checked = True

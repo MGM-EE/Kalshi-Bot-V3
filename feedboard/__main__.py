@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--research-state", type=Path, default=Path("data/research.sqlite3"),
                         help="Separate sampled research journal (enabled by default in paper mode)")
     parser.add_argument("--no-research", action="store_true", help="Disable research recording")
+    parser.add_argument("--no-decision-traces", action="store_true",
+                        help="Keep one-second research samples and fills without engine-step traces")
     parser.add_argument("--research-max-mib", type=int, default=2048,
                         help="Pause research snapshots at this file size; default 2048 MiB")
     parser.add_argument("--paper-state", type=Path, default=Path("data/paper.sqlite3"), help="Local paper journal path")
@@ -66,7 +68,8 @@ def main():
     web.run_app(create_app(settings, paper_path=args.paper_state if settings.paper_enabled else None,
                             paper_config=paper_config,
                             research_path=args.research_state if settings.paper_enabled and not args.no_research else None,
-                            research_max_bytes=args.research_max_mib * 1024 * 1024),
+                            research_max_bytes=args.research_max_mib * 1024 * 1024,
+                            research_decision_traces=not args.no_decision_traces),
                 host=args.host, port=args.port, access_log=None,
                 shutdown_timeout=3, print=lambda _: logging.info("Dashboard listening on port %s", args.port))
 

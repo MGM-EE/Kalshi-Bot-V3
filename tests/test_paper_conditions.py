@@ -34,7 +34,7 @@ class PaperConditionTests(unittest.TestCase):
         engine.step({}, {}, now=0, wall_time=EPOCH)
         view = engine.snapshot()["conditions"]
         self.assertEqual(view["updated_at"], EPOCH)
-        self.assertEqual(len(view["items"]), 16)
+        self.assertEqual(len(view["items"]), 17)
         self.assertEqual(items(engine)["data"]["state"], "building")
         json.dumps(view, allow_nan=False)
 

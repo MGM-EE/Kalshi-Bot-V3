@@ -6,7 +6,7 @@ All inputs come from the last engine step; observing this view never samples a f
 from __future__ import annotations
 
 from .paper import _fresh, _levels, _num, _timestamp, taker_fee
-from .entry_filters import in_entry_window
+from .entry_filters import entry_requirements, in_entry_window
 
 
 def _item(key, label, state, detail):
@@ -64,6 +64,8 @@ def _entry_conditions(engine, context):
         side = "up" if score >= 0 else "down"
     else:
         side = None
+    range_context = engine._range_context.view()
+    required = entry_requirements(config, signal, side, range_context) if signal else None
     direction = 1 if side == "up" else -1
     yes, no = _levels(book.get("yes")), _levels(book.get("no"))
     bids = (yes if side == "up" else no) if side else []
@@ -123,19 +125,20 @@ def _entry_conditions(engine, context):
         add("momentum", "5s / 20s momentum", "building", "Waiting for warmup; both periods must agree on one side.")
     else:
         five, twenty = direction * signal["five"], direction * signal["twenty"]
-        state = "met" if five >= signal["floor5"] and twenty >= signal["floor20"] else (
+        state = "met" if five >= required["momentum5_bps"] and twenty >= required["momentum20_bps"] else (
             "building" if five > 0 and twenty > 0 else "blocked")
         add("momentum", "5s / 20s momentum", state,
-            f"{side.upper()}-aligned: {five:+.2f}/{signal['floor5']:.2f} bps (5s), "
-            f"{twenty:+.2f}/{signal['floor20']:.2f} bps (20s).")
+            f"{side.upper()}-aligned: {five:+.2f}/{required['momentum5_bps']:.2f} bps (5s), "
+            f"{twenty:+.2f}/{required['momentum20_bps']:.2f} bps (20s). Range factor {required['range_factor']:.2f}×.")
     if flow is None or side is None:
         add("flow", "Aligned trade flow", "building",
             "Requires ≥3 trades, ≥15s window, ≤3s age, positive volume, and a candidate side.")
         add("large_prints", "Large prints", "building", "Waiting for valid fresh trade flow and a candidate side.")
     else:
         aligned, large = direction * flow["signed"], direction * flow["large"]
-        add("flow", "Aligned trade flow", _progress(aligned, config.flow_imbalance),
-            f"{side.upper()}-aligned {aligned * 100:+.1f}% / ≥{config.flow_imbalance * 100:g}%; "
+        flow_floor = required["flow_imbalance"] if required else config.flow_imbalance
+        add("flow", "Aligned trade flow", _progress(aligned, flow_floor),
+            f"{side.upper()}-aligned {aligned * 100:+.1f}% / ≥{flow_floor * 100:g}%; "
             "fresh ≥15s window with ≥3 trades.")
         add("large_prints", "Large prints", "met" if large >= -.35 else "blocked",
             f"{side.upper()}-aligned large-print imbalance {large * 100:+.1f}% / ≥−35%.")
@@ -164,6 +167,13 @@ def _entry_conditions(engine, context):
         "Fresh book revision available for a simulated fill." if revision else
         "Waiting for a new book revision; previously used depth cannot be filled twice.")
     quality = engine._entry_quality.view()
+    factor = required["range_factor"] if required else 1.
+    range_detail = (f"Observed ${range_context['lower']:,.2f}–${range_context['upper']:,.2f}; "
+                    f"{range_context['regime']}; {side or 'candidate'} factor {factor:.2f}×. "
+                    if range_context.get("ready") else "Collecting a rolling range; neutral thresholds during warmup. ")
+    add("range_bias", "Rolling range bias", "met" if config.range_bias_enabled else "disabled",
+        range_detail + ("Entry momentum/flow only; other gates and exits still apply."
+                        if config.range_bias_enabled else "Observation only; enable in settings to test entry weights."))
     efficiency = quality["efficiency"]
     if not config.choppiness_enabled:
         add("choppiness", "Trend quality", "disabled", "Choppiness filter is off.")

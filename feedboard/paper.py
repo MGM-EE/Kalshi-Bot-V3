@@ -13,7 +13,8 @@ from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from statistics import pstdev
 
-from .entry_filters import EntryQuality, in_entry_window
+from .entry_filters import EntryQuality, entry_requirements, in_entry_window
+from .range_context import RollingRange
 
 
 EXIT_CONTROL_FIELDS = (
@@ -27,6 +28,7 @@ ENTRY_FILTER_FIELDS = (
     "entry_window_enabled", "entry_start_minute", "entry_end_minute",
     "confirmation_enabled", "confirmation_seconds", "choppiness_enabled", "min_trend_efficiency",
 )
+RANGE_FIELDS = ("range_bias_enabled", "range_bias_strength")
 
 
 def _exit_controls(config):
@@ -121,6 +123,8 @@ class PaperConfig:
     confirmation_seconds: float = 2
     choppiness_enabled: bool = True
     min_trend_efficiency: float = .35
+    range_bias_enabled: bool = False
+    range_bias_strength: float = .20
 
     def __post_init__(self):
         numeric = (self.initial_cash, self.warmup_seconds, self.cooldown_seconds,
@@ -128,13 +132,15 @@ class PaperConfig:
                    self.max_entry_price, self.min_exit_price, self.dynamic_exit_min,
                    self.dynamic_exit_max, self.max_spread, self.min_momentum_bps,
                    self.flow_imbalance, self.max_above_floor_percent, self.max_below_floor_percent,
-                   self.entry_start_minute, self.entry_end_minute, self.confirmation_seconds, self.min_trend_efficiency)
+                   self.entry_start_minute, self.entry_end_minute, self.confirmation_seconds,
+                   self.min_trend_efficiency, self.range_bias_strength)
         if any(isinstance(v, bool) or not isinstance(v, (int, float)) or _num(v) is None
                for v in numeric):
             raise ValueError("paper configuration must be finite")
         if any(not isinstance(v, bool) for v in
                (self.dynamic_exit_enabled, self.require_toward_strike, self.entries_enabled,
-                self.floor_distance_enabled, self.entry_window_enabled, self.confirmation_enabled, self.choppiness_enabled,
+                self.floor_distance_enabled, self.entry_window_enabled, self.confirmation_enabled,
+                self.choppiness_enabled, self.range_bias_enabled,
                 *(getattr(self, name) for name in EXIT_CONTROL_FIELDS))):
             raise ValueError("paper configuration toggles must be booleans")
         if (isinstance(self.contracts, bool) or not isinstance(self.contracts, int)
@@ -151,7 +157,7 @@ class PaperConfig:
                 or not 0 <= self.max_below_floor_percent <= 100
                 or not 0 <= self.entry_start_minute < self.entry_end_minute <= 15
                 or not .1 <= self.confirmation_seconds <= 30
-                or not 0 <= self.min_trend_efficiency <= 1):
+                or not 0 <= self.min_trend_efficiency <= 1 or not 0 <= self.range_bias_strength <= .25):
             raise ValueError("invalid paper configuration")
         if self.series != "KXBTC15M" or self.symbol != "BTC/USD":
             raise ValueError("paper signals currently support KXBTC15M and BTC/USD only")
@@ -160,10 +166,11 @@ class PaperConfig:
 def _saved_config(value):
     """Accept complete settings from each supported version, never a partial schema."""
     current = {field.name for field in fields(PaperConfig)}
-    pre_entry = current.difference(ENTRY_FILTER_FIELDS)
+    pre_range = current.difference(RANGE_FIELDS)
+    pre_entry = pre_range.difference(ENTRY_FILTER_FIELDS)
     pre_band = pre_entry.difference(FLOOR_BAND_FIELDS)
     legacy = pre_band.difference(EXIT_CONTROL_FIELDS)
-    if not isinstance(value, dict) or set(value) not in (current, pre_entry, pre_band, legacy):
+    if not isinstance(value, dict) or set(value) not in (current, pre_range, pre_entry, pre_band, legacy):
         raise ValueError("invalid saved paper configuration")
     return PaperConfig(**value)
 
@@ -192,6 +199,7 @@ class PaperEngine:
         # Ephemeral inputs for a read-only condition display; never journaled.
         self._condition_context = None
         self._entry_quality = EntryQuality()
+        self._range_context = RollingRange()
         if state is not None:
             self._restore(state)
 
@@ -379,6 +387,7 @@ class PaperEngine:
                 "last_event": copy.deepcopy(self.events[-1]) if self.events else None,
                 "events": copy.deepcopy(list(self.events)),
                 "entry_quality": self._entry_quality.view(),
+                "range_context": self._range_context.view(),
                 "conditions": copy.deepcopy(build_conditions(self, self._condition_context))}
 
     def _emit(self, kind, position, price, quantity, pnl, reason, wall_time):
@@ -548,7 +557,9 @@ class PaperEngine:
                  and data.get("symbol") == self.config.symbol
                  and bid is not None and ask is not None and 0 < bid <= ask)
         token = (kraken.get("updates"), bid, ask)
-        self._entry_quality.observe(bid + (ask - bid) / 2 if valid else None, token, now, wall_time)
+        midpoint = bid + (ask - bid) / 2 if valid else None
+        self._entry_quality.observe(midpoint, token, now, wall_time)
+        self._range_context.observe(midpoint, token, now, wall_time)
         events = self._step(feeds, book, now=now, wall_time=wall_time)
         if not self._entry_quality.checked:
             self._entry_quality.clear_confirmation()
@@ -562,7 +573,11 @@ class PaperEngine:
         flow = self._flow(kraken)
         self._condition_context = {"feeds": copy.deepcopy(feeds), "book": copy.deepcopy(book),
                                    "signal": signal, "flow": flow, "now": now,
-                                   "wall_time": wall_time}
+                                   "wall_time": wall_time, "decision_phase": "exit" if self.position else "entry",
+                                   "range_context": self._range_context.view()}
+        requirements = ({side: entry_requirements(self.config, signal, side, self._condition_context["range_context"])
+                         for side in ("up", "down")} if signal and self.position is None else None)
+        self._condition_context["entry_requirements"] = requirements
         yes, no = _levels(book.get("yes")), _levels(book.get("no"))
         same_book = self.position is None or book.get("ticker") == self.position["ticker"]
         book_fresh = same_book and _fresh(book)
@@ -659,9 +674,10 @@ class PaperEngine:
         for candidate, direction in (("up", 1), ("down", -1)):
             if self.config.require_toward_strike and direction * (strike - signal["midpoint"]) <= 0:
                 continue
-            if (direction * signal["five"] < signal["floor5"]
-                    or direction * signal["twenty"] < signal["floor20"]
-                    or direction * flow["signed"] < self.config.flow_imbalance
+            required = requirements[candidate]
+            if (direction * signal["five"] < required["momentum5_bps"]
+                    or direction * signal["twenty"] < required["momentum20_bps"]
+                    or direction * flow["signed"] < required["flow_imbalance"]
                     or direction * flow["large"] < -.35):
                 continue
             bids = yes if candidate == "up" else no
@@ -682,7 +698,8 @@ class PaperEngine:
             fee = sum(taker_fee(q, p) for p, q in fills)
             if notional + fee > self.cash:
                 continue
-            key = (ticker, candidate, close, strike, book.get("strike_source"), self.config_revision)
+            key = (ticker, candidate, close, strike, book.get("strike_source"), self.config_revision,
+                   required["range_factor"])
             if self.config.confirmation_enabled and not self._entry_quality.confirm(
                     key, now, (kraken.get("updates"), signal["midpoint"]), book.get("version"),
                     self.config.confirmation_seconds):

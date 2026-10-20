@@ -20,6 +20,7 @@ class StrategySettingsTests(unittest.TestCase):
             "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent",
             "entry_window_enabled", "entry_start_minute", "entry_end_minute", "confirmation_enabled",
             "confirmation_seconds", "choppiness_enabled", "min_trend_efficiency_percent",
+            "range_bias_enabled", "range_bias_percent",
         })
         self.assertEqual(apply_public_settings(config, public), config)
         self.assertTrue(public["toward_strike_only"])
@@ -55,7 +56,7 @@ class StrategySettingsTests(unittest.TestCase):
         keys = ("dynamic_enabled", "toward_strike_only", "entries_enabled",
                 "hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal",
                 "exit_on_max_hold", "exit_before_expiry", "floor_distance_enabled",
-                "entry_window_enabled", "confirmation_enabled", "choppiness_enabled")
+                "entry_window_enabled", "confirmation_enabled", "choppiness_enabled", "range_bias_enabled")
         for key in keys:
             with self.subTest(key=key):
                 config = apply_public_settings(PaperConfig(), {key: False})
@@ -69,7 +70,7 @@ class StrategySettingsTests(unittest.TestCase):
     def test_numeric_settings_reject_strings_booleans_nonfinite_and_overflow(self):
         keys = set(public_settings(PaperConfig())) - {
             "floor_distance_enabled",
-            "entry_window_enabled", "confirmation_enabled", "choppiness_enabled",
+            "entry_window_enabled", "confirmation_enabled", "choppiness_enabled", "range_bias_enabled",
             "dynamic_enabled", "toward_strike_only", "entries_enabled",
             "hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal",
             "exit_on_max_hold", "exit_before_expiry",
@@ -110,7 +111,7 @@ class StrategySettingsTests(unittest.TestCase):
             "max_spread_cents": (-0.01, 20.01), "max_hold_seconds": (0.99, 3600.01),
             "cooldown_seconds": (-0.01, 3600.01), "min_momentum_bps": (0.009, 100.01),
             "entry_start_minute": (-.1, 15.1), "entry_end_minute": (-.1, 15.1),
-            "confirmation_seconds": (.09, 30.1), "min_trend_efficiency_percent": (-.1, 100.1),
+            "confirmation_seconds": (.09, 30.1), "min_trend_efficiency_percent": (-.1, 100.1), "range_bias_percent": (-.1, 25.1),
             "min_flow_percent": (-0.01, 100.01),
         }
         for key, invalids in bounds.items():

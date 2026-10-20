@@ -156,6 +156,17 @@ def _publication_state(paper):
                   for item in conditions.get("items", [])]}}
 
 
+def _research_call(store, name, *arguments, **keywords):
+    """Research diagnostics can fail without freezing account decisions."""
+    if store.research is not None:
+        callback = getattr(store.research, name, None)
+        if callback is not None:
+            try:
+                callback(*arguments, **keywords)
+            except Exception:
+                LOG.exception("Research %s failed; paper engine continues", name)
+
+
 async def run_paper(store, journal: PaperJournal, config: PaperConfig):
     """Never perform disk I/O in the feed or render loops; publish fills after commit."""
     control = store.paper_control or PaperControl(config)
@@ -173,6 +184,7 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
         return
     store.paper_engine = engine
     control.attach(engine)
+    _research_call(store, "initialize_decisions", engine, reason="startup")
     pending = None
     active_request = None
     try:
@@ -201,8 +213,9 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
                             future.set_exception(error)
                         active_request = None
                         continue
+                    changed_settings = candidate.dump_state() != engine.dump_state()
                     try:
-                        if candidate.dump_state() != engine.dump_state():
+                        if changed_settings:
                             revision = await asyncio.to_thread(journal.save, candidate.dump_state(), [], revision)
                     except (OSError, sqlite3.Error, ValueError, RuntimeError) as error:
                         LOG.exception("Paper settings save could not be confirmed; trading is paused")
@@ -217,6 +230,8 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
                     engine = candidate
                     store.paper_engine = engine
                     control.attach(engine)
+                    if changed_settings:
+                        _research_call(store, "initialize_decisions", engine, reason="settings")
                     store.paper = engine.snapshot()
                     store.revision += 1
                     if not future.done():
@@ -230,12 +245,12 @@ async def run_paper(store, journal: PaperJournal, config: PaperConfig):
                     # This snapshot uses actual current ages, even when a feed has stopped updating.
                     events = engine.step(store.snapshot()["feeds"], store.book_snapshot(),
                                          now=time.monotonic(), wall_time=time.time())
+                    _research_call(store, "record_decision", engine, events)
                     if events:
                         pending = (engine.dump_state(), events)
                 if pending is not None:
                     revision = await asyncio.to_thread(journal.save, pending[0], pending[1], revision)
-                    if store.research is not None:
-                        store.research.record_fill(engine, pending[1])
+                    _research_call(store, "record_fill", engine, pending[1])
                     pending = None
                     control.attach(engine)
                 current = engine.snapshot()

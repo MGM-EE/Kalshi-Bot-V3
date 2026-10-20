@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from tests.paper_fixtures import baseline_config
 
 from feedboard.core import Settings
-from feedboard.paper import ENTRY_FILTER_FIELDS, FLOOR_BAND_FIELDS, PaperEngine
+from feedboard.paper import ENTRY_FILTER_FIELDS, RANGE_FIELDS, FLOOR_BAND_FIELDS, PaperEngine
 from feedboard.web import STORE, create_app
 from tests.test_paper import EPOCH, book, feeds
 
@@ -76,7 +76,7 @@ class FloorBandTests(unittest.TestCase):
         engine, _ = entry(100000)
         state = engine.dump_state()
         for rules in (state["config"], state["position"]["rules"], state["events"][0]["rules"]):
-            for key in (*FLOOR_BAND_FIELDS, *ENTRY_FILTER_FIELDS):
+            for key in (*FLOOR_BAND_FIELDS, *ENTRY_FILTER_FIELDS, *RANGE_FIELDS):
                 rules.pop(key)
             self.assertEqual(len(rules), 24)
         original = copy.deepcopy(state)

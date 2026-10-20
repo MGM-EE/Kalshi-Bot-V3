@@ -6,8 +6,9 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
-from feedboard.export_research import export
+from feedboard.export_research import Parts, export
 from feedboard.paper_runtime import PaperJournal
 from feedboard.research import ResearchDB, iso
 from tests.test_paper_runtime import open_account
@@ -69,6 +70,77 @@ class ResearchExportTests(unittest.TestCase):
         self.assertEqual(len([row for row in data if row["type"] == "snapshot"]), 299)
         for path in paths:
             self.assertLess(path.stat().st_size, 65536 + 65536)
+        ids = set()
+        for number, path in enumerate(paths, 1):
+            with zipfile.ZipFile(path) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+                bundle = json.loads(archive.read("bundle.json"))
+                ids.add(manifest["export_id"])
+                self.assertEqual(bundle, {"export_id": manifest["export_id"], "part": number,
+                                          "total_parts": len(paths), "complete": True})
+                self.assertEqual(manifest["research_coverage"]["records"], 299)
+        self.assertEqual(ids, {data[-1]["export_id"]})
+
+    def test_manifest_and_footer_describe_exact_sequence_type_and_paper_coverage(self):
+        self.db.write([record(4, kind="decision", captured_at="2026-10-19T12:00:00.100+00:00")])
+        paths = export(self.research, self.paper, self.root / "coverage")
+        with zipfile.ZipFile(paths[0]) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+        footer = read_parts(paths)[-1]
+        self.assertEqual(manifest["export_id"], footer["export_id"])
+        self.assertEqual(manifest["research_coverage"], footer["research_coverage"])
+        coverage = manifest["research_coverage"]
+        self.assertEqual(coverage["records"], 3)
+        self.assertEqual(coverage["types"], {"snapshot": 2, "decision": 1})
+        self.assertEqual(coverage["first_record_at"], "2026-10-19T12:00:00.000+00:00")
+        self.assertEqual(coverage["last_record_at"], "2026-10-19T12:00:00.100+00:00")
+        session = coverage["sessions"][0]
+        self.assertEqual((session["session_id"], session["first_sequence"], session["last_sequence"]),
+                         ("session", 1, 4))
+        self.assertEqual(session["sequence_positions_without_exported_record"], 1)
+        self.assertEqual(len(session["source_sha256"]), 64)
+        paper = manifest["paper_coverage"]
+        self.assertEqual(paper, footer["paper_coverage"])
+        self.assertEqual(paper["event_count"], len(self.state["events"]))
+        self.assertEqual(paper["state_event_seq"], self.state["event_seq"])
+        self.assertEqual(paper["config_revision"], self.state["config_revision"])
+        self.assertEqual(paper["journal_revision"], 1)
+        self.assertEqual(paper["first_event_at"], self.state["events"][0]["at"])
+        self.assertEqual(paper["last_event_id"], self.state["events"][-1]["id"])
+
+    def test_manifests_whitelist_source_metadata_and_do_not_copy_arbitrary_session_fields(self):
+        with self.db.connect() as connection:
+            value = json.loads(connection.execute("SELECT metadata FROM sessions").fetchone()[0])
+            value.update(api_token="do-not-print-secret", endpoint="https://user:password@example.invalid")
+            connection.execute("UPDATE sessions SET metadata=?", (json.dumps(value),))
+        paths = export(self.research, None, self.root / "safe-manifest")
+        with zipfile.ZipFile(paths[0]) as archive:
+            manifest = archive.read("manifest.json").decode()
+        self.assertNotIn("do-not-print-secret", manifest)
+        self.assertNotIn("password", manifest)
+
+    def test_paper_snapshot_is_released_before_streaming_and_research_snapshot_stays_consistent(self):
+        original_add, mutated = Parts.add, []
+
+        def concurrent_update(parts, value):
+            if not mutated:
+                mutated.append(True)
+                newer = {**self.state, "config_revision": 5}
+                # This would fail with a locked DELETE-mode database if the
+                # exporter held the paper snapshot during the ZIP stream.
+                PaperJournal(self.paper).save(newer, [], 1)
+                self.db.write([record(3)])
+            original_add(parts, value)
+
+        with patch.object(Parts, "add", concurrent_update):
+            paths = export(self.research, self.paper, self.root / "snapshots")
+        data = read_parts(paths)
+        self.assertEqual([row["sequence"] for row in data if row["type"] == "snapshot"], [1, 2])
+        account = next(row for row in data if row["type"] == "paper_account")
+        self.assertEqual(account["state"], self.state)
+        self.assertEqual(account["revision"], 1)
+        self.assertEqual(data[-1]["paper_coverage"]["config_revision"], self.state["config_revision"])
+        self.assertEqual(PaperJournal(self.paper).load()[1], 2)
 
     def test_reads_committed_wal_without_requiring_checkpoint_or_stopping_writer(self):
         connection = sqlite3.connect(self.research)
@@ -93,3 +165,6 @@ class ResearchExportTests(unittest.TestCase):
         second = export(self.research, self.paper, self.root / "repeat")
         self.assertNotEqual(first, second)
         self.assertEqual(first[0].read_bytes(), original)
+        with zipfile.ZipFile(first[0]) as older, zipfile.ZipFile(second[0]) as newer:
+            self.assertNotEqual(json.loads(older.read("manifest.json"))["export_id"],
+                                json.loads(newer.read("manifest.json"))["export_id"])

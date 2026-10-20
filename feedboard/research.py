@@ -1,6 +1,7 @@
 """Sampled research evidence, isolated from the paper account and feed loop.
 
-This is a one-second normalized recorder, not a lossless exchange tick archive.
+This records one-second normalized views and actual paper decision steps,
+not a lossless exchange tick archive.
 Quotes are Kraken spot proxies; a live settlement-index feed is not collected.
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ import sqlite3
 import time
 import uuid
 import zlib
-from collections import deque
+from collections import Counter, deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from urllib.parse import quote
 import aiohttp
 
 from .core import normalize_kalshi, retry_after_seconds
+from .decision_trace import ANCHOR_SECONDS, FORMAT, DecisionEncoder, decision_frame, finite_copy
 from .outlook import INDEX_UNCERTAINTY, MOMENTUM_SECONDS, VOLATILITY_FLOOR
 from .paper import _fresh, _num, _timestamp
 
@@ -224,7 +226,9 @@ class SampleFeatures:
 
 class ResearchRecorder:
     def __init__(self, store, path, *, paper_path=None, interval=INTERVAL, queue_limit=QUEUE_LIMIT,
-                 outcome_interval=5, max_bytes=DEFAULT_MAX_BYTES):
+                 outcome_interval=5, max_bytes=DEFAULT_MAX_BYTES, decision_traces=True):
+        if isinstance(queue_limit, bool) or not isinstance(queue_limit, int) or queue_limit < 1:
+            raise ValueError("Research queue capacity must be a positive integer")
         if paper_path is not None and Path(path).resolve() == Path(paper_path).resolve():
             raise ValueError("Research and paper journals must use different files")
         self.store, self.database = store, ResearchDB(path, max_bytes=max_bytes)
@@ -236,6 +240,13 @@ class ResearchRecorder:
         self.queue = asyncio.Queue(maxsize=queue_limit)
         self.stop_event, self.ready = asyncio.Event(), asyncio.Event()
         self.sequence = self.written = self.dropped = 0
+        self.dropped_by_kind = Counter()
+        self.reserved_capacity = max(1, min(16, queue_limit // 4))
+        self.trace_capacity = max(0, queue_limit - 2 * self.reserved_capacity)
+        self.ordinary_capacity = max(0, queue_limit - self.reserved_capacity)
+        self.decision_traces = decision_traces
+        self.decision_encoder = DecisionEncoder()
+        self.pending_bootstrap = None
         self.last_written_at = self.error = self.outcome_error = None
         self.tasks = []
         self.features = SampleFeatures()
@@ -245,16 +256,85 @@ class ResearchRecorder:
                 "session_id": self.session_id, "records_written": self.written,
                 "last_written_at": self.last_written_at, "dropped_records": self.dropped,
                 "queue_depth": self.queue.qsize(), "error": self.error,
-                "outcome_error": self.outcome_error, "interval_seconds": self.interval}
+                "outcome_error": self.outcome_error, "interval_seconds": self.interval,
+                "dropped_records_by_kind": dict(self.dropped_by_kind),
+                "decision_traces": self.decision_traces, "decision_trace_format": FORMAT,
+                "decision_trace_sequence": self.decision_encoder.sequence}
 
     def enqueue(self, kind, payload, *, ticker=None):
         self.sequence += 1
         record = {"session_id": self.session_id, "sequence": self.sequence, "kind": kind,
                   "captured_at": iso(), "ticker": ticker, "payload": payload}
+        capacity = (self.trace_capacity if kind == "decision" else self.ordinary_capacity
+                    if kind == "snapshot" else self.queue.maxsize)
+        if self.queue.qsize() >= capacity:
+            self.dropped += 1
+            self.dropped_by_kind[kind] += 1
+            return False
         try:
             self.queue.put_nowait(record)
+            return True
         except asyncio.QueueFull:
             self.dropped += 1
+            self.dropped_by_kind[kind] += 1
+            return False
+
+    def initialize_decisions(self, engine, *, reason="startup"):
+        """A bounded starting account checkpoint, before startup/settings steps."""
+        if not self.decision_traces:
+            return
+        try:
+            bootstrap_id = self.decision_encoder.begin()
+            self.pending_bootstrap = finite_copy({
+                "format": FORMAT, "bootstrap_id": bootstrap_id, "reason": reason,
+                "before_trace_sequence": self.decision_encoder.sequence + 1,
+                "state": engine.dump_state(), "config_revision": engine.config_revision,
+                "coverage": "Account checkpoint plus engine-step inputs; not raw exchange ticks",
+                "replay_scope": "Replay requires uninterrupted inputs from a cold startup; full anchors resync context, not feature history",
+            })
+            self._enqueue_bootstrap()
+        except Exception:
+            self.dropped += 1
+            self.dropped_by_kind["decision_bootstrap"] += 1
+            self.decision_encoder.invalidate()
+            LOG.exception("Could not initialize research decision trace")
+
+    def _enqueue_bootstrap(self):
+        if self.pending_bootstrap is not None and self.enqueue("decision_bootstrap", self.pending_bootstrap):
+            self.pending_bootstrap = None
+        return self.pending_bootstrap is None
+
+    def record_decision(self, engine, events):
+        """Nonblocking decision evidence; a fill requires a separate commit record."""
+        if not self.decision_traces:
+            return
+        trace_before, record_before = self.decision_encoder.sequence, self.sequence
+        try:
+            if self.decision_encoder.bootstrap_id == 0:
+                # Runtime normally supplies the pre-step checkpoint. Do not
+                # invent one from an engine that has already attempted a fill.
+                raise ValueError("Decision trace requires a pre-step bootstrap")
+            frame = decision_frame(engine, events)
+            payload = self.decision_encoder.encode(frame)
+            if not self._enqueue_bootstrap():
+                self.sequence += 1
+                self.dropped += 1
+                self.dropped_by_kind["decision"] += 1
+                self.decision_encoder.invalidate()
+            elif not self.enqueue("decision", payload, ticker=frame["book"]["ticker"]):
+                self.decision_encoder.invalidate()
+        except Exception:
+            # Even a frame-copy failure means an actual engine observation is
+            # absent. Reserve its sequence so the next full anchor exposes the
+            # gap without depending on an eventual session-end summary.
+            if self.decision_encoder.sequence == trace_before:
+                self.decision_encoder.sequence += 1
+            if self.sequence == record_before:
+                self.sequence += 1
+            self.dropped += 1
+            self.dropped_by_kind["decision"] += 1
+            self.decision_encoder.invalidate()
+            LOG.exception("Could not record research decision; paper engine continues")
 
     def record_fill(self, engine, events):
         # Called only after the authoritative paper journal transaction commits.
@@ -266,6 +346,7 @@ class ResearchRecorder:
                     "recorded_after_paper_commit": True}), ticker=event.get("ticker"))
         except Exception:
             self.dropped += 1
+            self.dropped_by_kind["paper_fill"] += 1
             LOG.exception("Could not enqueue research fill; authoritative paper journal is intact")
 
     async def start(self):
@@ -307,6 +388,10 @@ class ResearchRecorder:
                     "kalshi_poll_seconds": self.store.settings.poll_seconds,
                     "max_database_bytes": self.database.max_bytes,
                     "paper_journal": self.paper_path, "index_feed_available": False,
+                    "decision_trace": {"enabled": self.decision_traces, "format": FORMAT,
+                                       "cadence": "each actual paper engine step, normally about 100ms",
+                                       "anchor_seconds": ANCHOR_SECONDS,
+                                       "raw_exchange_ticks": False},
                     "model": {"id": "spot-normal-v1", "volatility_floor": VOLATILITY_FLOOR,
                               "index_uncertainty": INDEX_UNCERTAINTY, "momentum_seconds": MOMENTUM_SECONDS}}
         while not self.ready.is_set():
@@ -329,6 +414,17 @@ class ResearchRecorder:
                     continue
                 while len(batch) < 10 and not self.queue.empty():
                     batch.append(self.queue.get_nowait())
+                deadline = asyncio.get_running_loop().time() + .2
+                while len(batch) < 50 and not self.stop_event.is_set():
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        batch.append(await asyncio.wait_for(self.queue.get(), remaining))
+                    except TimeoutError:
+                        break
+                while len(batch) < 50 and not self.queue.empty():
+                    batch.append(self.queue.get_nowait())
             try:
                 await asyncio.to_thread(self.database.write, batch)
                 # A retried transaction may already be committed. Count the
@@ -345,6 +441,7 @@ class ResearchRecorder:
         try:
             await asyncio.to_thread(self.database.end, self.session_id,
                 {"records_written": self.written, "dropped_records": self.dropped,
+                 "dropped_records_by_kind": dict(self.dropped_by_kind),
                  "last_sequence": self.sequence, "outcome_error": self.outcome_error})
         except (OSError, sqlite3.Error):
             LOG.exception("Research session end could not be saved")

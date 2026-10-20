@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from tests.paper_fixtures import baseline_config
 
-from feedboard.paper import ENTRY_FILTER_FIELDS, EXIT_CONTROL_FIELDS, FLOOR_BAND_FIELDS, PaperEngine, taker_fee
+from feedboard.paper import ENTRY_FILTER_FIELDS, RANGE_FIELDS, EXIT_CONTROL_FIELDS, FLOOR_BAND_FIELDS, PaperEngine, taker_fee
 
 
 EPOCH = 1_800_000_000.
@@ -164,7 +164,7 @@ class ExitControlMigrationTests(unittest.TestCase):
     def legacy_state(self):
         state = opened().dump_state()
         for rules in (state["config"], state["position"]["rules"], state["events"][0]["rules"]):
-            for name in (*EXIT_CONTROL_FIELDS, *FLOOR_BAND_FIELDS, *ENTRY_FILTER_FIELDS):
+            for name in (*EXIT_CONTROL_FIELDS, *FLOOR_BAND_FIELDS, *ENTRY_FILTER_FIELDS, *RANGE_FIELDS):
                 del rules[name]
         return state
 

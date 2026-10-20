@@ -25,7 +25,7 @@
   let activePaperEvent = null;
   let paperEventTimer = null;
   const exitControlNames = ["hold_to_settlement", "exit_on_stop_loss", "exit_on_reversal", "exit_on_max_hold", "exit_before_expiry"];
-  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent", "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", "entry_window_enabled", "entry_start_minute", "entry_end_minute", "confirmation_enabled", "confirmation_seconds", "choppiness_enabled", "min_trend_efficiency_percent", ...exitControlNames];
+  const settingNames = ["min_buy_cents", "max_buy_cents", "min_sell_cents", "dynamic_min_cents", "dynamic_max_cents", "contracts", "dynamic_enabled", "toward_strike_only", "entries_enabled", "stop_loss_cents", "max_spread_cents", "max_hold_seconds", "cooldown_seconds", "min_momentum_bps", "min_flow_percent", "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", "entry_window_enabled", "entry_start_minute", "entry_end_minute", "confirmation_enabled", "confirmation_seconds", "choppiness_enabled", "min_trend_efficiency_percent", "range_bias_enabled", "range_bias_percent", ...exitControlNames];
   const settingInputs = Object.fromEntries(settingNames.map(name => [name, el["settings-form"].elements.namedItem(name)]));
   const settingsState = { loaded: false, attempted: false, available: false, busy: false, saving: false, revision: null, saved: null, conflict: false, applyPosition: null };
 
@@ -96,7 +96,9 @@
     settingInputs.entry_end_minute.disabled = !settingInputs.entry_window_enabled.checked;
     settingInputs.confirmation_seconds.disabled = !settingInputs.confirmation_enabled.checked;
     settingInputs.min_trend_efficiency_percent.disabled = !settingInputs.choppiness_enabled.checked;
+    settingInputs.range_bias_percent.disabled = !settingInputs.range_bias_enabled.checked;
     renderFloorBandPreview();
+    renderRangePreview();
     const hold = settingInputs.hold_to_settlement.checked;
     for (const name of exitControlNames.slice(1)) settingInputs[name].disabled = hold;
     el["settings-early-exits"].setAttribute("aria-disabled", String(hold));
@@ -127,6 +129,26 @@
 
   function clearSettingsErrors() {
     for (const input of Object.values(settingInputs)) input.removeAttribute("aria-invalid");
+  }
+
+  function renderRangePreview() {
+    const range = snapshot?.paper?.range_context;
+    const quoteAge = feedAge(snapshot?.feeds?.kraken);
+    let text = "Observing recent BTC prices. Range weights are experimental and off by default.";
+    if (connectionState !== "live") {
+      text = "Waiting for a live connection to update the observed range.";
+    } else if (!numeric(snapshot?.paper?.conditions?.updated_at) || feedState(snapshot?.feeds?.kraken) !== "live" || !numeric(quoteAge) || quoteAge > 3000) {
+      text = "Range preview is waiting for active paper checks and fresh BTC quotes.";
+    } else if (range?.ready && numeric(range.lower) && numeric(range.upper)) {
+      const regime = String(range.regime).replaceAll("_", " ");
+      const preference = range.favored ? `Near a tested boundary: ${range.favored.toUpperCase()} preference.` : "No boundary preference.";
+      text = `Observed lower ${money(range.lower)} / upper ${money(range.upper)} · ${regime}. ${preference} ${settingInputs.range_bias_enabled.checked ? "Save settings to apply edited weights." : "Observation only; bias is off."}`;
+    } else if (range?.status === "warming_up") {
+      text = `Building range history: ${Math.floor(range.covered_seconds / 60)}/10 minutes minimum. Weights stay neutral until ready.`;
+    } else if (range?.status === "flat") {
+      text = "The observed range is too narrow for a useful boundary preference. Weights stay neutral.";
+    }
+    setText(el["settings-range-preview"], text);
   }
 
   function settingsError(message, fields = {}) {
@@ -680,6 +702,7 @@
     const data = feeds.kalshi?.data || {};
     const reference = snapshot.reference || {};
     renderFloorBandPreview();
+    renderRangePreview();
     setText(el["settings-strike"], numeric(reference.strike_price) && reference.strike_source === "kalshi.floor_strike" ? `Strike ${money(reference.strike_price)} · trend uses Kraken spot; settlement uses Kalshi’s BRTI reference.` : "Strike unavailable · buys toward the strike wait for a reference.");
     const series = typeof data.series === "string" ? data.series : "KXBTC15M";
     setText(el["kalshi-series"], series === "KXBTC15M" ? `${series} · 15-minute markets` : series);

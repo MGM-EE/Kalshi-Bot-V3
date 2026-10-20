@@ -12,7 +12,7 @@ from unittest.mock import patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from feedboard.entry_filters import EntryQuality
-from feedboard.paper import ENTRY_FILTER_FIELDS, PaperConfig, PaperEngine
+from feedboard.paper import ENTRY_FILTER_FIELDS, RANGE_FIELDS, PaperConfig, PaperEngine
 from feedboard.paper_runtime import PaperJournal
 from feedboard.strategy_settings import apply_public_settings, public_settings
 from feedboard.web import STORE, create_app
@@ -265,7 +265,7 @@ class EntrySettingsTests(unittest.TestCase):
         engine,_=warm()
         state=engine.dump_state()
         for rules in (state['config'],state['position']['rules'],state['events'][0]['rules']):
-            for name in ENTRY_FILTER_FIELDS:rules.pop(name)
+            for name in (*ENTRY_FILTER_FIELDS, *RANGE_FIELDS):rules.pop(name)
         original=copy.deepcopy(state)
         restored=PaperEngine(state=state)
         self.assertTrue(restored.config.entry_window_enabled and restored.config.confirmation_enabled and restored.config.choppiness_enabled)

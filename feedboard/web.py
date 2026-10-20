@@ -128,12 +128,13 @@ async def events(request: web.Request):
 
 def create_app(settings: Settings | None = None, *, run_feeds: bool = True,
                paper_path: Path | None = None, paper_config: PaperConfig | None = None,
-               research_path: Path | None = None, research_max_bytes: int = DEFAULT_MAX_BYTES) -> web.Application:
+               research_path: Path | None = None, research_max_bytes: int = DEFAULT_MAX_BYTES,
+               research_decision_traces: bool = True) -> web.Application:
     app = web.Application(client_max_size=4096)
     app[STORE] = Store(settings or Settings())
     if research_path is not None:
         recorder = ResearchRecorder(app[STORE], research_path, paper_path=paper_path,
-                                    max_bytes=research_max_bytes)
+                                    max_bytes=research_max_bytes, decision_traces=research_decision_traces)
         app[RESEARCH] = recorder
         app[STORE].research = recorder
 

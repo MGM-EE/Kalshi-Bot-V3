@@ -26,6 +26,7 @@ _NUMBERS = {
     "entry_end_minute": ("entry_end_minute", 1, "Entry end minute", 0, 15),
     "confirmation_seconds": ("confirmation_seconds", 1, "Signal confirmation seconds", .1, 30),
     "min_trend_efficiency_percent": ("min_trend_efficiency", 100, "Minimum trend efficiency percent", 0, 100),
+    "range_bias_percent": ("range_bias_strength", 100, "Range bias strength percent", 0, 25),
 }
 _BOOLEANS = {
     "dynamic_enabled": "dynamic_exit_enabled",
@@ -40,6 +41,7 @@ _BOOLEANS = {
     "entry_window_enabled": "entry_window_enabled",
     "confirmation_enabled": "confirmation_enabled",
     "choppiness_enabled": "choppiness_enabled",
+    "range_bias_enabled": "range_bias_enabled",
 }
 
 

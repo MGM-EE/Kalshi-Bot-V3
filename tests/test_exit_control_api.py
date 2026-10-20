@@ -13,7 +13,7 @@ from unittest.mock import patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from tests.paper_fixtures import baseline_config
-from feedboard.paper import ENTRY_FILTER_FIELDS
+from feedboard.paper import ENTRY_FILTER_FIELDS, RANGE_FIELDS
 
 from feedboard.paper import PaperConfig, PaperEngine
 from feedboard.paper_runtime import PaperJournal
@@ -156,7 +156,7 @@ class ExitControlApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_nineteen_field_rules_can_apply_hold_and_restart_preserving_history(self):
         legacy = seeded_state()
         for rules in (legacy["config"], legacy["position"]["rules"], legacy["events"][0]["rules"]):
-            for key in (*DEFAULT_CONTROLS, "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", *ENTRY_FILTER_FIELDS):
+            for key in (*DEFAULT_CONTROLS, "floor_distance_enabled", "max_above_floor_percent", "max_below_floor_percent", *ENTRY_FILTER_FIELDS, *RANGE_FIELDS):
                 del rules[key]
             self.assertEqual(len(rules), 19)
         original = copy.deepcopy(legacy)
